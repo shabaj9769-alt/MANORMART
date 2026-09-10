@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "manormart",
-    "slug": "snack-b0584aba-7d42-4ad2-af1a-30ccb4c738df",
+    "slug": "manormart",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -24,6 +24,11 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "b1af867a-7c01-4f48-8390-b585b4ebeff4"
+      }
     }
   }
 }
