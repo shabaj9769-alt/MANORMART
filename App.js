@@ -1,6 +1,8 @@
-// --- MANOR MART ULTIMATE CUSTOMER APP (NEXT-GEN COMMERCE FEATURES) ---
+// --- MANOR MART ULTIMATE CUSTOMER APP (NEXT-GEN COMMERCE FEATURES - MOBILE & WEB FIXED) ---
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, SafeAreaView, Modal, Image, Linking, ImageBackground, Animated } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, SafeAreaView, Modal, Image, Linking, ImageBackground, Animated, Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 const db = "https://manorbiryani-default-rtdb.firebaseio.com/";
 
 export default function CustomerApp() {
@@ -69,41 +71,45 @@ export default function CustomerApp() {
     ).start();
   }, []);
 
-  const checkURLPaymentReturn = () => {
+  const checkURLPaymentReturn = async () => {
     try {
-      const urlParams = new URLSearchParams(window.location.search);
-      if (urlParams.get('payment') === 'success') {
-        let pendingOrderId = localStorage.getItem('manor_pending_ord');
-        if (pendingOrderId) {
-          fetch(db + `orders/${pendingOrderId}/deliveryStatus.json`, {
-            method: 'PUT',
-            body: JSON.stringify('Order Successful')
-          }).then(() => {
-            localStorage.removeItem('manor_pending_ord');
+      if (Platform.OS === 'web') {
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('payment') === 'success') {
+          let pendingOrderId = await AsyncStorage.getItem('manor_pending_ord');
+          if (pendingOrderId) {
+            await fetch(db + `orders/${pendingOrderId}/deliveryStatus.json`, {
+              method: 'PUT',
+              body: JSON.stringify('Order Successful')
+            });
+            await AsyncStorage.removeItem('manor_pending_ord');
             Alert.alert("🎉 Payment Successful", "Online payment verified and order confirmed!");
-          });
+          }
         }
       }
     } catch(e) {}
   };
 
-  const checkSavedCustomerSession = () => {
-    let savedPhone = localStorage.getItem('manor_cust_phone');
-    let savedName = localStorage.getItem('manor_cust_name');
-    let savedAddr = localStorage.getItem('manor_cust_addr');
-    let savedAddrsList = localStorage.getItem('manor_cust_addrs_list');
-    if (savedPhone) {
-      setCustPhone(savedPhone);
-      if (savedName) setCustName(savedName);
-      if (savedAddr) setCustAddr(savedAddr);
-      if (savedAddrsList) {
-        try { setSavedAddresses(JSON.parse(savedAddrsList)); } catch(e){}
-      } else if (savedAddr) {
-        setSavedAddresses([savedAddr]);
+  const checkSavedCustomerSession = async () => {
+    try {
+      let savedPhone = await AsyncStorage.getItem('manor_cust_phone');
+      let savedName = await AsyncStorage.getItem('manor_cust_name');
+      let savedAddr = await AsyncStorage.getItem('manor_cust_addr');
+      let savedAddrsList = await AsyncStorage.getItem('manor_cust_addrs_list');
+
+      if (savedPhone) {
+        setCustPhone(savedPhone);
+        if (savedName) setCustName(savedName);
+        if (savedAddr) setCustAddr(savedAddr);
+        if (savedAddrsList) {
+          try { setSavedAddresses(JSON.parse(savedAddrsList)); } catch(e){}
+        } else if (savedAddr) {
+          setSavedAddresses([savedAddr]);
+        }
+        setIsLoggedIn(true);
+        fetchCustomerOrders(savedPhone);
       }
-      setIsLoggedIn(true);
-      fetchCustomerOrders(savedPhone);
-    }
+    } catch(e) {}
   };
 
   const loadStoreConfigAndCatalog = () => {
@@ -121,7 +127,7 @@ export default function CustomerApp() {
   };
 
   const detectCustomerGPS = () => {
-    if (navigator.geolocation) {
+    if (Platform.OS === 'web' && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           let lat = pos.coords.latitude;
@@ -132,6 +138,8 @@ export default function CustomerApp() {
         () => calcGeoFence(19.7280, 72.9150, storeSettings.hubLat, storeSettings.hubLng, storeSettings.radiusKm),
         { enableHighAccuracy: true }
       );
+    } else {
+      calcGeoFence(19.7280, 72.9150, storeSettings.hubLat, storeSettings.hubLng, storeSettings.radiusKm);
     }
   };
 
@@ -185,12 +193,12 @@ export default function CustomerApp() {
   if (deliveryType === 'Express') deliveryFee += expExtra;
   let finalTotal = subtotal + (subtotal > 0 ? deliveryFee : 0);
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     let cleanPh = (loginPhoneInput || '').replace(/[^0-9]/g, '').trim();
     if (cleanPh.length !== 10) return Alert.alert("Error", "Enter valid 10-digit phone number!");
     setCustPhone(cleanPh);
     setIsLoggedIn(true);
-    localStorage.setItem('manor_cust_phone', cleanPh);
+    await AsyncStorage.setItem('manor_cust_phone', cleanPh);
     fetchCustomerOrders(cleanPh);
     Alert.alert("Success", "Logged in successfully!");
   };
@@ -204,17 +212,24 @@ export default function CustomerApp() {
     });
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('manor_cust_phone');
-    localStorage.removeItem('manor_cust_name');
-    localStorage.removeItem('manor_cust_addr');
-    localStorage.removeItem('manor_cust_addrs_list');
+  const handleLogout = async () => {
+    await AsyncStorage.removeItem('manor_cust_phone');
+    await AsyncStorage.removeItem('manor_cust_name');
+    await AsyncStorage.removeItem('manor_cust_addr');
+    await AsyncStorage.removeItem('manor_cust_addrs_list');
     setIsLoggedIn(false); setCart({}); setActiveTab('shop');
     Alert.alert("Logged Out", "Session cleared.");
   };
 
   const handleDeleteAccount = () => {
-    if (window.confirm("Are you sure you want to delete your account?")) handleLogout();
+    Alert.alert(
+      "Delete Account",
+      "Are you sure you want to delete your account and clear data?",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", onPress: handleLogout, style: "destructive" }
+      ]
+    );
   };
 
   const confirmDeleteOrder = (orderId) => {
@@ -237,19 +252,19 @@ export default function CustomerApp() {
     return '';
   };
 
-  const saveCurrentAddress = () => {
+  const saveCurrentAddress = async () => {
     let cleanAddr = sanitizeInput(custAddr);
     if (!cleanAddr) return Alert.alert("Error", "Enter address to save!");
     let updatedAddrs = [...savedAddresses];
     if (!updatedAddrs.includes(cleanAddr)) {
       updatedAddrs.push(cleanAddr);
       setSavedAddresses(updatedAddrs);
-      localStorage.setItem('manor_cust_addrs_list', JSON.stringify(updatedAddrs));
+      await AsyncStorage.setItem('manor_cust_addrs_list', JSON.stringify(updatedAddrs));
       Alert.alert("Saved", "Address added to saved addresses list!");
     }
   };
 
-  const placeOrder = () => {
+  const placeOrder = async () => {
     let cleanName = sanitizeInput(custName);
     let cleanAddr = sanitizeInput(custAddr);
 
@@ -284,15 +299,17 @@ export default function CustomerApp() {
     fetch(db + `orders/${orderId}.json`, {
       method: 'PUT',
       body: JSON.stringify(orderObj)
-    }).then(() => {
+    }).then(async () => {
       setCart({});
       setActiveTab('orders');
       fetchCustomerOrders(custPhone);
 
       if (paymentMode === 'Online') {
-        localStorage.setItem('manor_pending_ord', orderId);
+        await AsyncStorage.setItem('manor_pending_ord', orderId);
         let targetUrl = storeSettings.upi ? storeSettings.upi.trim() : 'https://rzp.io/rzp/KshDefR';
-        Linking.openURL(targetUrl).catch(() => window.location.href = targetUrl);
+        Linking.openURL(targetUrl).catch(() => {
+          if (Platform.OS === 'web') window.location.href = targetUrl;
+        });
       } else {
         Alert.alert("🎉 Success", `Order #${orderId.slice(-6)} placed successfully!`);
       }
@@ -301,7 +318,6 @@ export default function CustomerApp() {
     });
   };
 
-  // RENDER ORDER TIMELINE PROGRESS BAR
   const renderTimelineTracker = (status) => {
     let steps = ['Order Successful', 'Assigned', 'Out for Delivery', 'Delivered'];
     let currentStepIdx = 0;
@@ -359,6 +375,28 @@ export default function CustomerApp() {
         )}
       </SafeAreaView>
     );
+  }
+
+  // Helper to get items list for product grid display
+  let itemsToDisplay = [];
+  if (searchQuery) {
+    Object.keys(categories).forEach(cat => {
+      Object.keys(categories[cat] || {}).forEach(pKey => {
+        if (pKey !== 'status') {
+          let pr = categories[cat][pKey];
+          if (pr?.name && pr.name.toLowerCase().includes(searchQuery.toLowerCase())) {
+            itemsToDisplay.push({ ...pr, catName: cat });
+          }
+        }
+      });
+    });
+  } else if (selectedCat && categories[selectedCat]) {
+    Object.keys(categories[selectedCat]).forEach(pKey => {
+      if (pKey !== 'status') {
+        let pr = categories[selectedCat][pKey];
+        if (pr?.name) itemsToDisplay.push({ ...pr, catName: selectedCat });
+      }
+    });
   }
 
   return (
@@ -440,28 +478,11 @@ export default function CustomerApp() {
                           {searchQuery ? `🔍 Search Results for "${searchQuery}"` : `📁 ${selectedCat}`}
                         </Text>
                         
-                        <ScrollView style={{maxHeight: 520}} contentContainerStyle={{flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', paddingBottom: 20}}>
-                          {(() => {
-                            let itemsToDisplay = [];
-                            if (searchQuery) {
-                              Object.keys(categories).forEach(cat => {
-                                Object.keys(categories[cat]).forEach(pKey => {
-                                  if (pKey !== 'status') {
-                                    let pr = categories[cat][pKey];
-                                    if (pr?.name && pr.name.toLowerCase().includes(searchQuery.toLowerCase())) itemsToDisplay.push({ ...pr, catName: cat });
-                                  }
-                                });
-                              });
-                            } else if (selectedCat && categories[selectedCat]) {
-                              Object.keys(categories[selectedCat]).forEach(pKey => {
-                                if (pKey !== 'status') {
-                                  let pr = categories[selectedCat][pKey];
-                                  if (pr?.name) itemsToDisplay.push({ ...pr, catName: selectedCat });
-                                }
-                              });
-                            }
-                            if (itemsToDisplay.length === 0) return <Text style={{textAlign: 'center', color: '#888', marginTop: 30, width: '100%'}}>No products found.</Text>;
-                            return itemsToDisplay.map((pr, idx) => {
+                        {itemsToDisplay.length === 0 ? (
+                          <Text style={{textAlign: 'center', color: '#888', marginTop: 30, width: '100%'}}>No products found.</Text>
+                        ) : (
+                          <View style={{flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', paddingBottom: 20}}>
+                            {itemsToDisplay.map((pr, idx) => {
                               let effPrice = Number(pr.price) - Number(pr.discount || 0);
                               let cartQty = cart[pr.id]?.qty || 0;
                               let isOutOfStock = pr.inStock === false;
@@ -492,9 +513,9 @@ export default function CustomerApp() {
                                   )}
                                 </View>
                               );
-                            });
-                          })()}
-                        </ScrollView>
+                            })}
+                          </View>
+                        )}
                       </View>
                     )}
                   </View>
@@ -531,14 +552,15 @@ export default function CustomerApp() {
                           </View>
                         </View>
                         
-                        {/* VISUAL ORDER TIMELINE TRACKER */}
                         {renderTimelineTracker(ord.deliveryStatus)}
 
                         {isWaitingPayment && (
-                          <TouchableOpacity onPress={() => {
+                          <TouchableOpacity onPress={async () => {
                             let targetUrl = storeSettings.upi ? storeSettings.upi.trim() : 'https://rzp.io/rzp/KshDefR';
-                            localStorage.setItem('manor_pending_ord', ord.id);
-                            Linking.openURL(targetUrl).catch(() => window.location.href = targetUrl);
+                            await AsyncStorage.setItem('manor_pending_ord', ord.id);
+                            Linking.openURL(targetUrl).catch(() => {
+                              if (Platform.OS === 'web') window.location.href = targetUrl;
+                            });
                           }} style={{backgroundColor: '#ffb300', padding: 8, borderRadius: 6, marginVertical: 6, alignItems: 'center'}}>
                             <Text style={{color: '#000', fontWeight: 'bold', fontSize: 11}}>💳 Complete Razorpay Payment</Text>
                           </TouchableOpacity>
@@ -596,9 +618,9 @@ export default function CustomerApp() {
                   </View>
                 )}
 
-                <TouchableOpacity style={[s.btn, {backgroundColor: '#6a1b9a', marginTop: 10}]} onPress={() => {
-                  localStorage.setItem('manor_cust_name', custName);
-                  localStorage.setItem('manor_cust_addr', custAddr);
+                <TouchableOpacity style={[s.btn, {backgroundColor: '#6a1b9a', marginTop: 10}]} onPress={async () => {
+                  await AsyncStorage.setItem('manor_cust_name', custName);
+                  await AsyncStorage.setItem('manor_cust_addr', custAddr);
                   Alert.alert("Success", "Profile updated!");
                 }}><Text style={s.btnTxt}>💾 Save Changes</Text></TouchableOpacity>
 
@@ -710,7 +732,7 @@ export default function CustomerApp() {
                   </View>
 
                   <TouchableOpacity style={[s.btn, {marginTop: 16, backgroundColor: inRange ? '#6a1b9a' : '#c62828'}]} onPress={placeOrder}>
-                    <Text style={s.btnTxt}>{inRange ? (paymentMode === 'Online' ? `Pay ₹{finalTotal} via Razorpay & Place Order` : `Place COD Order (₹{finalTotal})`) : '⚠️ Outside Delivery Zone'}</Text>
+                    <Text style={s.btnTxt}>{inRange ? (paymentMode === 'Online' ? `Pay ₹${finalTotal} via Razorpay & Place Order` : `Place COD Order (₹${finalTotal})`) : '⚠️ Outside Delivery Zone'}</Text>
                   </TouchableOpacity>
                 </View>
               </ScrollView>
