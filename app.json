@@ -2,6 +2,7 @@
   "expo": {
     "name": "manormart",
     "slug": "manormart",
+    "scheme": "manormart",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
