@@ -1,6 +1,6 @@
-// --- MANOR MART ADVANCED CUSTOMER APP (FINAL GPS PERSISTENT BUILD) ---
+// --- MANOR MART ADVANCED CUSTOMER APP (SAFE AREA BOTTOM FIXED BUILD) ---
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, SafeAreaView, Modal, Image, Linking, ImageBackground, Animated, Platform, BackHandler } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, SafeAreaView, Modal, Image, Linking, ImageBackground, Platform, BackHandler, Dimensions } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const db = "https://manorbiryani-default-rtdb.firebaseio.com/";
@@ -19,6 +19,7 @@ export default function CustomerApp() {
     radiusKm: '10',
     adminNote: '',
     bgImage: '',
+    storeOpen: true,
     b1: '',
     b2: '',
     b3: ''
@@ -62,7 +63,6 @@ export default function CustomerApp() {
     checkURLPaymentReturn();
 
     const autoRefreshInterval = setInterval(() => {
-      // Refresh karte waqt current saved lat/lng use karein taaki distance 0 na ho
       fetch(db + ".json").then(r => r.json()).then(data => {
         if (!data) return;
         if (data.settings) setStoreSettings(prev => ({ ...prev, ...data.settings }));
@@ -139,9 +139,7 @@ export default function CustomerApp() {
           setCustLng(lng);
           loadStoreConfigAndCatalog(lat, lng);
         },
-        () => {
-          loadStoreConfigAndCatalog(19.7280, 72.9150);
-        },
+        () => loadStoreConfigAndCatalog(19.7280, 72.9150),
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 1000 }
       );
     } else {
@@ -338,6 +336,10 @@ export default function CustomerApp() {
   };
 
   const placeOrder = async () => {
+    if (storeSettings.storeOpen === false) {
+      return Alert.alert("Store Closed", "Sorry! The store is currently closed. You cannot place orders right now.");
+    }
+
     let cleanName = sanitizeInput(custName);
     let cleanAddr = sanitizeInput(custAddr);
 
@@ -524,6 +526,12 @@ export default function CustomerApp() {
         </View>
       </View>
 
+      {storeSettings.storeOpen === false && (
+        <View style={{backgroundColor: '#c62828', padding: 10, alignItems: 'center', width: '100%'}}>
+          <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 12}}>🔴 Store is Currently Closed! You cannot place orders right now.</Text>
+        </View>
+      )}
+
       {activeTab === 'shop' && (
         <View style={s.stickySearchContainer}>
           <TextInput 
@@ -617,6 +625,10 @@ export default function CustomerApp() {
                             {isSoldOut ? (
                               <View style={{backgroundColor: '#e53935', width: '100%', paddingVertical: 5, borderRadius: 6, alignItems: 'center', marginTop: 4}}>
                                 <Text style={{color: '#fff', fontSize: 9.5, fontWeight: 'bold'}}>SOLD OUT</Text>
+                              </View>
+                            ) : storeSettings.storeOpen === false ? (
+                              <View style={{backgroundColor: '#757575', width: '100%', paddingVertical: 5, borderRadius: 6, alignItems: 'center', marginTop: 4}}>
+                                <Text style={{color: '#fff', fontSize: 9.5, fontWeight: 'bold'}}>STORE CLOSED</Text>
                               </View>
                             ) : cartQty === 0 ? (
                               <TouchableOpacity onPress={(e) => { e.stopPropagation(); inRange && updateCartQty(pr, 1); }} style={[s.gridAddBtn, !inRange && {backgroundColor: '#b0bec5'}]}><Text style={{color: '#fff', fontSize: 11, fontWeight: 'bold'}}>ADD +</Text></TouchableOpacity>
@@ -741,6 +753,7 @@ export default function CustomerApp() {
         )}
       </ScrollView>
 
+      {/* PRODUCT DETAILS MODAL (SAFE AREA BOTTOM INSET INCLUDED) */}
       <Modal visible={isProductModalVisible} transparent={true} animationType="fade" onRequestClose={() => setIsProductModalVisible(false)}>
         <TouchableOpacity activeOpacity={1} onPress={() => setIsProductModalVisible(false)} style={s.modalBottomSheetOverlay}>
           <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={s.modalBottomSheetCard}>
@@ -748,73 +761,80 @@ export default function CustomerApp() {
               <Text style={{fontSize: 14, fontWeight: 'bold', color: '#333'}}>✕</Text>
             </TouchableOpacity>
 
-            {selectedProduct && (() => {
-              let effPrice = Number(selectedProduct.price) - Number(selectedProduct.discount || 0);
-              let cartQty = cart[selectedProduct.id]?.qty || 0;
-              let itemTotal = effPrice * (cartQty > 0 ? cartQty : 1);
-              let isSoldOut = selectedProduct.inStock === false;
+            <ScrollView contentContainerStyle={{width: '100%', alignItems: 'center', paddingBottom: 50}} showsVerticalScrollIndicator={false}>
+              {selectedProduct && (() => {
+                let effPrice = Number(selectedProduct.price) - Number(selectedProduct.discount || 0);
+                let cartQty = cart[selectedProduct.id]?.qty || 0;
+                let itemTotal = effPrice * (cartQty > 0 ? cartQty : 1);
+                let isSoldOut = selectedProduct.inStock === false;
 
-              return (
-                <View style={{width: '100%', alignItems: 'center'}}>
-                  {selectedProduct.image ? (
-                    <Image source={{ uri: selectedProduct.image }} style={{width: 100, height: 100, borderRadius: 10, resizeMode: 'contain', marginBottom: 8}} />
-                  ) : (
-                    <View style={{width: 100, height: 100, borderRadius: 10, backgroundColor: '#f3e5f5', justifyContent: 'center', alignItems: 'center', marginBottom: 8}}>
-                      <Text style={{fontSize: 32}}>📦</Text>
-                    </View>
-                  )}
-
-                  <Text style={{fontSize: 15, fontWeight: 'bold', color: '#222', textAlign: 'center', marginBottom: 2}}>{selectedProduct.name}</Text>
-                  <Text style={{fontSize: 11.5, color: '#666', fontWeight: '600', marginBottom: 8}}>⚖️ {selectedProduct.unit}</Text>
-
-                  <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 15}}>
-                    <Text style={{fontSize: 16, fontWeight: 'bold', color: '#2e7d32'}}>₹{effPrice}</Text>
-                    {Number(selectedProduct.discount || 0) > 0 && (
-                      <Text style={{fontSize: 11, color: '#888', textDecorationLine: 'line-through', marginLeft: 6}}>₹{selectedProduct.price}</Text>
+                return (
+                  <View style={{width: '100%', alignItems: 'center'}}>
+                    {selectedProduct.image ? (
+                      <Image source={{ uri: selectedProduct.image }} style={{width: 100, height: 100, borderRadius: 10, resizeMode: 'contain', marginBottom: 8}} />
+                    ) : (
+                      <View style={{width: 100, height: 100, borderRadius: 10, backgroundColor: '#f3e5f5', justifyContent: 'center', alignItems: 'center', marginBottom: 8}}>
+                        <Text style={{fontSize: 32}}>📦</Text>
+                      </View>
                     )}
-                  </View>
 
-                  {isSoldOut ? (
-                    <View style={{backgroundColor: '#e53935', width: '100%', padding: 10, borderRadius: 8, alignItems: 'center', marginBottom: 12}}>
-                      <Text style={{color: '#fff', fontSize: 12, fontWeight: 'bold'}}>CURRENTLY SOLD OUT</Text>
-                    </View>
-                  ) : (
-                    <View style={{width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f9f9f9', padding: 10, borderRadius: 8, borderWidth: 1, borderColor: '#eee', marginBottom: 12}}>
-                      <Text style={{fontSize: 12, fontWeight: 'bold', color: '#444'}}>Quantity ({selectedProduct.unit})</Text>
-                      {cartQty === 0 ? (
-                        <TouchableOpacity onPress={() => { inRange && updateCartQty(selectedProduct, 1); }} style={{backgroundColor: '#6a1b9a', paddingHorizontal: 20, paddingVertical: 6, borderRadius: 6}}>
-                          <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 12}}>ADD +</Text>
-                        </TouchableOpacity>
-                      ) : (
-                        <View style={{flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 4, borderRadius: 6}}>
-                          <TouchableOpacity onPress={() => updateCartQty(selectedProduct, -1)} style={{backgroundColor: '#6a1b9a', width: 28, height: 28, borderRadius: 4, justifyContent: 'center', alignItems: 'center'}}>
-                            <Text style={{color:'#fff', fontWeight:'bold', fontSize: 16}}>-</Text>
-                          </TouchableOpacity>
-                          <Text style={{marginHorizontal: 12, fontWeight: 'bold', fontSize: 13}}>{cartQty}</Text>
-                          <TouchableOpacity onPress={() => updateCartQty(selectedProduct, 1)} style={{backgroundColor: '#6a1b9a', width: 28, height: 28, borderRadius: 4, justifyContent: 'center', alignItems: 'center'}}>
-                            <Text style={{color:'#fff', fontWeight:'bold', fontSize: 16}}>+</Text>
-                          </TouchableOpacity>
-                        </View>
+                    <Text style={{fontSize: 15, fontWeight: 'bold', color: '#222', textAlign: 'center', marginBottom: 2}}>{selectedProduct.name}</Text>
+                    <Text style={{fontSize: 11.5, color: '#666', fontWeight: '600', marginBottom: 8}}>⚖️ {selectedProduct.unit}</Text>
+
+                    <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 12}}>
+                      <Text style={{fontSize: 16, fontWeight: 'bold', color: '#2e7d32'}}>₹{effPrice}</Text>
+                      {Number(selectedProduct.discount || 0) > 0 && (
+                        <Text style={{fontSize: 11, color: '#888', textDecorationLine: 'line-through', marginLeft: 6}}>₹{selectedProduct.price}</Text>
                       )}
                     </View>
-                  )}
 
-                  <View style={{width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15, paddingHorizontal: 4}}>
-                    <Text style={{fontSize: 11.5, color: '#555', fontWeight: 'bold'}}>Total: {cartQty > 0 ? cartQty : 1} x {selectedProduct.unit}</Text>
-                    <Text style={{fontSize: 13.5, fontWeight: 'bold', color: '#2e7d32'}}>Item Total: ₹{itemTotal}</Text>
+                    {/* TOTAL & ITEM TOTAL DISPLAY AT THE TOP */}
+                    <View style={{width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, paddingHorizontal: 8, backgroundColor: '#f3e5f5', padding: 8, borderRadius: 6}}>
+                      <Text style={{fontSize: 11.5, color: '#4a148c', fontWeight: 'bold'}}>Total: {cartQty > 0 ? cartQty : 1} x {selectedProduct.unit}</Text>
+                      <Text style={{fontSize: 13.5, fontWeight: 'bold', color: '#2e7d32'}}>Item Total: ₹{itemTotal}</Text>
+                    </View>
+
+                    {isSoldOut ? (
+                      <View style={{backgroundColor: '#e53935', width: '100%', padding: 10, borderRadius: 8, alignItems: 'center', marginBottom: 12}}>
+                        <Text style={{color: '#fff', fontSize: 12, fontWeight: 'bold'}}>CURRENTLY SOLD OUT</Text>
+                      </View>
+                    ) : storeSettings.storeOpen === false ? (
+                      <View style={{backgroundColor: '#757575', width: '100%', padding: 10, borderRadius: 8, alignItems: 'center', marginBottom: 12}}>
+                        <Text style={{color: '#fff', fontSize: 12, fontWeight: 'bold'}}>STORE CLOSED</Text>
+                      </View>
+                    ) : (
+                      <View style={{width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f9f9f9', padding: 10, borderRadius: 8, borderWidth: 1, borderColor: '#eee', marginBottom: 15}}>
+                        <Text style={{fontSize: 12, fontWeight: 'bold', color: '#444'}}>Quantity ({selectedProduct.unit})</Text>
+                        {cartQty === 0 ? (
+                          <TouchableOpacity onPress={() => { inRange && updateCartQty(selectedProduct, 1); }} style={{backgroundColor: '#6a1b9a', paddingHorizontal: 20, paddingVertical: 6, borderRadius: 6}}>
+                            <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 12}}>ADD +</Text>
+                          </TouchableOpacity>
+                        ) : (
+                          <View style={{flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 4, borderRadius: 6}}>
+                            <TouchableOpacity onPress={() => updateCartQty(selectedProduct, -1)} style={{backgroundColor: '#6a1b9a', width: 28, height: 28, borderRadius: 4, justifyContent: 'center', alignItems: 'center'}}>
+                              <Text style={{color:'#fff', fontWeight:'bold', fontSize: 16}}>-</Text>
+                            </TouchableOpacity>
+                            <Text style={{marginHorizontal: 12, fontWeight: 'bold', fontSize: 13}}>{cartQty}</Text>
+                            <TouchableOpacity onPress={() => updateCartQty(selectedProduct, 1)} style={{backgroundColor: '#6a1b9a', width: 28, height: 28, borderRadius: 4, justifyContent: 'center', alignItems: 'center'}}>
+                              <Text style={{color:'#fff', fontWeight:'bold', fontSize: 16}}>+</Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+                      </View>
+                    )}
+
+                    <TouchableOpacity onPress={() => setIsProductModalVisible(false)} style={{backgroundColor: '#6a1b9a', width: '100%', padding: 12, borderRadius: 8, alignItems: 'center', marginBottom: 20}}>
+                      <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 13}}>Done / View Cart</Text>
+                    </TouchableOpacity>
                   </View>
-
-                  <TouchableOpacity onPress={() => setIsProductModalVisible(false)} style={{backgroundColor: '#6a1b9a', width: '100%', padding: 11, borderRadius: 8, alignItems: 'center'}}>
-                    <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 13}}>Done / View Cart</Text>
-                  </TouchableOpacity>
-                </View>
-              );
-            })()}
+                );
+              })()}
+            </ScrollView>
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
 
-      {subtotal > 0 && activeTab === 'shop' && inRange && (
+      {subtotal > 0 && activeTab === 'shop' && inRange && storeSettings.storeOpen !== false && (
         <View style={s.floatingCartBar}>
           <View style={{flex: 1, paddingRight: 6}}>
             <Text style={{color: '#fff', fontSize: 10.5, fontWeight: 'bold'}} numberOfLines={1}>{cartItemsList.reduce((sum, i) => sum + i.qty, 0)} Items | ₹{subtotal}</Text>
@@ -975,6 +995,6 @@ const s = StyleSheet.create({
   modalCard: { width: '100%', maxWidth: 350, backgroundColor: '#fff', padding: 15, borderRadius: 14, elevation: 8 },
   modalTitle: { fontSize: 15, fontWeight: 'bold', color: '#4a1b9a', marginBottom: 4 },
   modalBottomSheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end', alignItems: 'center' },
-  modalBottomSheetCard: { width: '100%', backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, alignItems: 'center', elevation: 15 },
-  modalCloseCircle: { position: 'absolute', top: 10, right: 15, width: 28, height: 28, borderRadius: 14, backgroundColor: '#eee', justifyContent: 'center', alignItems: 'center' }
+  modalBottomSheetCard: { width: '100%', maxHeight: '75%', backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: Platform.OS === 'android' ? 30 : 20, alignItems: 'center', elevation: 15 },
+  modalCloseCircle: { position: 'absolute', top: 10, right: 15, width: 28, height: 28, borderRadius: 14, backgroundColor: '#eee', justifyContent: 'center', alignItems: 'center', zIndex: 10 }
 });
