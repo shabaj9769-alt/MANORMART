@@ -31,9 +31,6 @@ export default function CustomerApp() {
   const [cart, setCart] = useState({});
   const [activeTab, setActiveTab] = useState('shop');
 
-  const [selectedProduct, setSelectedProduct] = useState(null);
-  const [isProductModalVisible, setIsProductModalVisible] = useState(false);
-
   const [termsAccepted, setTermsAccepted] = useState(false);
   const termsDocLink = "https://docs.google.com/document/d/1Ifz2UIjAx1mfaaRiV0xisLihPXhCeiQkmebOfnBSUDA/edit?usp=drivesdk";
 
@@ -604,10 +601,8 @@ export default function CustomerApp() {
                         let isSoldOut = pr.inStock === false;
 
                         return (
-                          <TouchableOpacity 
+                          <View 
                             key={idx} 
-                            activeOpacity={0.8} 
-                            onPress={() => { setSelectedProduct(pr); setIsProductModalVisible(true); }} 
                             style={[s.gridCard, isSoldOut && {backgroundColor: '#f5f5f5'}]}
                           >
                             {pr.image ? <Image source={{ uri: pr.image }} style={s.gridImg} /> : <View style={[s.gridImg, {justifyContent:'center', alignItems:'center', backgroundColor:'#f3e5f5'} ]}><Text style={{fontSize: 24}}>📦</Text></View>}
@@ -631,15 +626,15 @@ export default function CustomerApp() {
                                 <Text style={{color: '#fff', fontSize: 9.5, fontWeight: 'bold'}}>STORE CLOSED</Text>
                               </View>
                             ) : cartQty === 0 ? (
-                              <TouchableOpacity onPress={(e) => { e.stopPropagation(); inRange && updateCartQty(pr, 1); }} style={[s.gridAddBtn, !inRange && {backgroundColor: '#b0bec5'}]}><Text style={{color: '#fff', fontSize: 11, fontWeight: 'bold'}}>ADD +</Text></TouchableOpacity>
+                              <TouchableOpacity onPress={() => { inRange && updateCartQty(pr, 1); }} style={[s.gridAddBtn, !inRange && {backgroundColor: '#b0bec5'}]}><Text style={{color: '#fff', fontSize: 11, fontWeight: 'bold'}}>ADD +</Text></TouchableOpacity>
                             ) : (
-                              <View style={s.qtyCon} onStartShouldSetResponder={() => true}>
+                              <View style={s.qtyCon}>
                                 <TouchableOpacity onPress={() => updateCartQty(pr, -1)} style={s.qtyBtn}><Text style={{color:'#fff', fontWeight:'bold', fontSize: 14}}>-</Text></TouchableOpacity>
                                 <Text style={{marginHorizontal: 8, fontWeight: 'bold', fontSize: 12}}>{cartQty}</Text>
                                 <TouchableOpacity onPress={() => updateCartQty(pr, 1)} style={s.qtyBtn}><Text style={{color:'#fff', fontWeight:'bold', fontSize: 14}}>+</Text></TouchableOpacity>
                               </View>
                             )}
-                          </TouchableOpacity>
+                          </View>
                         );
                       })}
                     </View>
@@ -752,89 +747,6 @@ export default function CustomerApp() {
           </View>
         )}
       </ScrollView>
-
-      {/* PRODUCT DETAILS MODAL WRAPPED WITH SAFEAREAVIEW FOR DYNAMIC SYSTEM INSETS */}
-      <Modal visible={isProductModalVisible} transparent={true} animationType="fade" onRequestClose={() => setIsProductModalVisible(false)}>
-        <View style={s.modalBottomSheetOverlay}>
-          <SafeAreaView style={{width: '100%', alignItems: 'center'}}>
-            <View style={s.modalBottomSheetCard}>
-              <TouchableOpacity onPress={() => setIsProductModalVisible(false)} style={s.modalCloseCircle}>
-                <Text style={{fontSize: 14, fontWeight: 'bold', color: '#333'}}>✕</Text>
-              </TouchableOpacity>
-
-              <ScrollView contentContainerStyle={{width: '100%', alignItems: 'center', paddingBottom: 25}} showsVerticalScrollIndicator={false}>
-                {selectedProduct && (() => {
-                  let effPrice = Number(selectedProduct.price) - Number(selectedProduct.discount || 0);
-                  let cartQty = cart[selectedProduct.id]?.qty || 0;
-                  let itemTotal = effPrice * (cartQty > 0 ? cartQty : 1);
-                  let isSoldOut = selectedProduct.inStock === false;
-
-                  return (
-                    <View style={{width: '100%', alignItems: 'center'}}>
-                      {selectedProduct.image ? (
-                        <Image source={{ uri: selectedProduct.image }} style={{width: 100, height: 100, borderRadius: 10, resizeMode: 'contain', marginBottom: 8}} />
-                      ) : (
-                        <View style={{width: 100, height: 100, borderRadius: 10, backgroundColor: '#f3e5f5', justifyContent: 'center', alignItems: 'center', marginBottom: 8}}>
-                          <Text style={{fontSize: 32}}>📦</Text>
-                        </View>
-                      )}
-
-                      <Text style={{fontSize: 15, fontWeight: 'bold', color: '#222', textAlign: 'center', marginBottom: 2}}>{selectedProduct.name}</Text>
-                      <Text style={{fontSize: 11.5, color: '#666', fontWeight: '600', marginBottom: 8}}>⚖️ {selectedProduct.unit}</Text>
-
-                      <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 12}}>
-                        <Text style={{fontSize: 16, fontWeight: 'bold', color: '#2e7d32'}}>₹{effPrice}</Text>
-                        {Number(selectedProduct.discount || 0) > 0 && (
-                          <Text style={{fontSize: 11, color: '#888', textDecorationLine: 'line-through', marginLeft: 6}}>₹{selectedProduct.price}</Text>
-                        )}
-                      </View>
-
-                      {/* TOTAL & ITEM TOTAL DISPLAY AT THE TOP */}
-                      <View style={{width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, paddingHorizontal: 8, backgroundColor: '#f3e5f5', padding: 8, borderRadius: 6}}>
-                        <Text style={{fontSize: 11.5, color: '#4a148c', fontWeight: 'bold'}}>Total: {cartQty > 0 ? cartQty : 1} x {selectedProduct.unit}</Text>
-                        <Text style={{fontSize: 13.5, fontWeight: 'bold', color: '#2e7d32'}}>Item Total: ₹{itemTotal}</Text>
-                      </View>
-
-                      {isSoldOut ? (
-                        <View style={{backgroundColor: '#e53935', width: '100%', padding: 10, borderRadius: 8, alignItems: 'center', marginBottom: 12}}>
-                          <Text style={{color: '#fff', fontSize: 12, fontWeight: 'bold'}}>CURRENTLY SOLD OUT</Text>
-                        </View>
-                      ) : storeSettings.storeOpen === false ? (
-                        <View style={{backgroundColor: '#757575', width: '100%', padding: 10, borderRadius: 8, alignItems: 'center', marginBottom: 12}}>
-                          <Text style={{color: '#fff', fontSize: 12, fontWeight: 'bold'}}>STORE CLOSED</Text>
-                        </View>
-                      ) : (
-                        <View style={{width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f9f9f9', padding: 10, borderRadius: 8, borderWidth: 1, borderColor: '#eee', marginBottom: 15}}>
-                          <Text style={{fontSize: 12, fontWeight: 'bold', color: '#444'}}>Quantity ({selectedProduct.unit})</Text>
-                          {cartQty === 0 ? (
-                            <TouchableOpacity onPress={() => { inRange && updateCartQty(selectedProduct, 1); }} style={{backgroundColor: '#6a1b9a', paddingHorizontal: 20, paddingVertical: 6, borderRadius: 6}}>
-                              <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 12}}>ADD +</Text>
-                            </TouchableOpacity>
-                          ) : (
-                            <View style={{flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 4, borderRadius: 6}}>
-                              <TouchableOpacity onPress={() => updateCartQty(selectedProduct, -1)} style={{backgroundColor: '#6a1b9a', width: 28, height: 28, borderRadius: 4, justifyContent: 'center', alignItems: 'center'}}>
-                                <Text style={{color:'#fff', fontWeight:'bold', fontSize: 16}}>-</Text>
-                              </TouchableOpacity>
-                              <Text style={{marginHorizontal: 12, fontWeight: 'bold', fontSize: 13}}>{cartQty}</Text>
-                              <TouchableOpacity onPress={() => updateCartQty(selectedProduct, 1)} style={{backgroundColor: '#6a1b9a', width: 28, height: 28, borderRadius: 4, justifyContent: 'center', alignItems: 'center'}}>
-                                <Text style={{color:'#fff', fontWeight:'bold', fontSize: 16}}>+</Text>
-                              </TouchableOpacity>
-                            </View>
-                          )}
-                        </View>
-                      )}
-
-                      <TouchableOpacity onPress={() => setIsProductModalVisible(false)} style={{backgroundColor: '#6a1b9a', width: '100%', padding: 12, borderRadius: 8, alignItems: 'center'}}>
-                        <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 13}}>Done / View Cart</Text>
-                      </TouchableOpacity>
-                    </View>
-                  );
-                })()}
-              </ScrollView>
-            </View>
-          </SafeAreaView>
-        </View>
-      </Modal>
 
       {subtotal > 0 && activeTab === 'shop' && inRange && storeSettings.storeOpen !== false && (
         <View style={s.floatingCartBar}>
@@ -978,11 +890,11 @@ const s = StyleSheet.create({
   gridImg: { width: '100%', height: 110, borderRadius: 8, backgroundColor: '#f9f9f9', marginBottom: 6, resizeMode: 'contain' },
   gridAddBtn: { backgroundColor: '#6a1b9a', width: '100%', paddingVertical: 6, borderRadius: 6, alignItems: 'center', marginTop: 4 },
   
-  qtyCon: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 3, borderRadius: 6, marginTop: 4, justifyContent: 'space-between', width: '100%' },
+  qtyCon: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 3, borderRadius: '6', marginTop: 4, justifyContent: 'space-between', width: '100%' },
   qtyConCart: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 4, borderRadius: 6, justifyContent: 'space-between' },
   qtyBtn: { backgroundColor: '#6a1b9a', width: 24, height: 24, borderRadius: 4, justifyContent: 'center', alignItems: 'center' },
   
-  floatingCartBar: { position: 'absolute', bottom: 60, left: 10, right: 10, backgroundColor: '#4a148c', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', elevation: 8 },
+  floatingCartBar: { position: 'absolute', bottom: 90, left: 10, right: 10, backgroundColor: '#4a148c', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', elevation: 8 },
   viewCartBtn: { backgroundColor: '#ffd54f', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
   card: { backgroundColor: '#fff', padding: 10, borderRadius: 8, marginBottom: 8, borderWidth: 1, borderColor: '#d1c4e9', elevation: 2, width: '100%' },
   secTitle: { fontSize: 12, fontWeight: 'bold', color: '#4a148c', marginVertical: 4 },
@@ -995,8 +907,5 @@ const s = StyleSheet.create({
   catChipAct: { backgroundColor: '#6a1b9a', borderColor: '#6a1b9a' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 15, width: '100%' },
   modalCard: { width: '100%', maxWidth: 350, backgroundColor: '#fff', padding: 15, borderRadius: 14, elevation: 8 },
-  modalTitle: { fontSize: 15, fontWeight: 'bold', color: '#4a1b9a', marginBottom: 4 },
-  modalBottomSheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end', alignItems: 'center' },
-  modalBottomSheetCard: { width: '100%', maxHeight: '75%', backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, alignItems: 'center', elevation: 15 },
-  modalCloseCircle: { position: 'absolute', top: 10, right: 15, width: 28, height: 28, borderRadius: 14, backgroundColor: '#eee', justifyContent: 'center', alignItems: 'center', zIndex: 10 }
+  modalTitle: { fontSize: 15, fontWeight: 'bold', color: '#4a148c', marginBottom: 4 }
 });
