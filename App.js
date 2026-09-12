@@ -342,33 +342,33 @@ export default function CustomerApp() {
 
   const placeOrder = async () => {
     if (storeSettings.storeOpen === false) {
-      return Alert.alert("Store Closed", "Sorry! The store is currently closed. You cannot place orders right now[span_0](start_span)[span_0](end_span).");
+      return Alert.alert("Store Closed", "Sorry! The store is currently closed. You cannot place orders right now[span_1](start_span)[span_1](end_span).");
     }
 
     let cleanName = sanitizeInput(custName);
     let cleanAddr = sanitizeInput(custAddr);
 
     if (!cleanName || cleanName.trim() === '') {
-      return Alert.alert("⚠️ Name Required", "Please enter your Full Name in delivery details[span_1](start_span)[span_1](end_span)!");
+      return Alert.alert("⚠️ Name Required", "Please enter your Full Name in delivery details[span_2](start_span)[span_2](end_span)!");
     }
     if (!cleanAddr || cleanAddr.trim() === '') {
-      return Alert.alert("⚠️ Address Required", "Please enter your Delivery Address[span_2](start_span)[span_2](end_span)!");
+      return Alert.alert("⚠️ Address Required", "Please enter your Delivery Address[span_3](start_span)[span_3](end_span)!");
     }
     if (!custPhone || custPhone.length !== 10) {
-      return Alert.alert("⚠️ Phone Error", "Valid 10-digit mobile number required[span_3](start_span)[span_3](end_span).");
+      return Alert.alert("⚠️ Phone Error", "Valid 10-digit mobile number required[span_4](start_span)[span_4](end_span).");
     }
 
     // STRICT GEOFENCE CHECK FOR ALL ORDERS
     if (!inRange) {
       return Alert.alert(
         "🚫 Outside Delivery Zone", 
-        `Sorry! Store delivers only within ${storeSettings.radiusKm} KM. Your location is ${distanceKm} KM away, which is out of our delivery zone[span_4](start_span)[span_4](end_span).`
+        `Sorry! Store delivers only within ${storeSettings.radiusKm} KM. Your location is ${distanceKm} KM away, which is out of our delivery zone[span_5](start_span)[span_5](end_span).`
       );
     }
 
     let minOrd = Number(storeSettings.minOrd || 0);
     if (minOrd > 0 && subtotal < minOrd) {
-      return Alert.alert("⚠️ Minimum Order Notice", `Store minimum order is ₹${minOrd}. Your subtotal is ₹${subtotal}[span_5](start_span)[span_5](end_span).`);
+      return Alert.alert("⚠️ Minimum Order Notice", `Store minimum order is ₹${minOrd}. Your subtotal is ₹${subtotal}[span_6](start_span)[span_6](end_span).`);
     }
 
     let orderId = 'ord_' + Date.now();
@@ -391,8 +391,10 @@ export default function CustomerApp() {
 
       if (paymentMode === 'Online') {
         await AsyncStorage.setItem('manor_pending_ord', orderId);
-        let baseUrl = storeSettings.upi ? storeSettings.upi.trim() : 'https://rzp.io/rzp/KshDefR';
-        let targetUrl = baseUrl.includes('?') ? `${baseUrl}&amount=${finalTotal}` : `${baseUrl}?amount=${finalTotal}`;
+        let customBaseUrl = storeSettings.upi && storeSettings.upi.trim().startsWith('http') 
+          ? storeSettings.upi.trim() 
+          : 'https://shabaj9769-alt.github.io/manormart-pay/';
+        let targetUrl = `${customBaseUrl}?amount=${finalTotal}&order_id=${orderId}`;
         
         try {
           let supported = await Linking.canOpenURL(targetUrl);
@@ -400,16 +402,16 @@ export default function CustomerApp() {
             await Linking.openURL(targetUrl);
           } else {
             if (Platform.OS === 'web') window.location.href = targetUrl;
-            else Alert.alert("Error", "Cannot open payment link[span_6](start_span)[span_6](end_span).");
+            else Alert.alert("Error", "Cannot open payment link[span_7](start_span)[span_7](end_span).");
           }
         } catch (e) {
           if (Platform.OS === 'web') window.location.href = targetUrl;
         }
       } else {
-        Alert.alert("🎉 Success", `Order #${orderId.slice(-6)} placed successfully[span_7](start_span)[span_7](end_span)!`);
+        Alert.alert("🎉 Success", `Order #${orderId.slice(-6)} placed successfully[span_8](start_span)[span_8](end_span)!`);
       }
     }).catch(err => {
-      Alert.alert("Error", "Failed to place order. Please try again[span_8](start_span)[span_8](end_span).");
+      Alert.alert("Error", "Failed to place order. Please try again[span_9](start_span)[span_9](end_span).");
     });
   };
 
@@ -521,10 +523,15 @@ export default function CustomerApp() {
               📍 Delivery to: {custAddr ? custAddr : 'Enter address in Profile'}
             </Text>
           </View>
-          <View style={{backgroundColor: inRange ? '#2e7d32' : '#c62828', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6}}>
-            <Text style={{fontSize: 9.5, color: '#fff', fontWeight: 'bold'}} numberOfLines={1}>
-              {inRange ? `Inside (${distanceKm} KM)` : `Outside (${distanceKm} KM)`}
-            </Text>
+          <View style={{flexDirection: 'row', alignItems: 'center'}}>
+            <TouchableOpacity onPress={detectCustomerGPSAndLoadStore} style={{backgroundColor: '#7b1fa2', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, marginRight: 6}}>
+              <Text style={{fontSize: 9.5, color: '#fff', fontWeight: 'bold'}}>🔄 Refresh GPS</Text>
+            </TouchableOpacity>
+            <View style={{backgroundColor: inRange ? '#2e7d32' : '#c62828', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6}}>
+              <Text style={{fontSize: 9.5, color: '#fff', fontWeight: 'bold'}} numberOfLines={1}>
+                {inRange ? `Inside (${distanceKm} KM)` : `Outside (${distanceKm} KM)`}
+              </Text>
+            </View>
           </View>
         </View>
 
