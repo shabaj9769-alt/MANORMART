@@ -1,6 +1,6 @@
-// --- MANOR MART ADVANCED CUSTOMER APP (DYNAMIC SAFE AREA MODAL BUILD) ---
+// --- MANOR MART ADVANCED INSTAMART-STYLE CUSTOMER APP ---
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, SafeAreaView, Modal, Image, Linking, ImageBackground, Platform, BackHandler, Dimensions } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, SafeAreaView, Modal, Image, Linking, Platform, BackHandler } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const db = "https://manorbiryani-default-rtdb.firebaseio.com/";
@@ -62,7 +62,13 @@ export default function CustomerApp() {
     const autoRefreshInterval = setInterval(() => {
       fetch(db + ".json").then(r => r.json()).then(data => {
         if (!data) return;
-        if (data.settings) setStoreSettings(prev => ({ ...prev, ...data.settings }));
+        if (data.settings) {
+          setStoreSettings(prev => {
+            const updated = { ...prev, ...data.settings };
+            calcGeoFence(custLat, custLng, updated.hubLat, updated.hubLng, updated.radiusKm);
+            return updated;
+          });
+        }
         if (data.categories) setCategories(data.categories);
         if (data.deliveryBoys) setDeliveryBoysList(data.deliveryBoys);
       }).catch(e => {});
@@ -73,7 +79,7 @@ export default function CustomerApp() {
     }, 5000);
 
     return () => clearInterval(autoRefreshInterval);
-  }, [custPhone]);
+  }, [custPhone, custLat, custLng]);
 
   const checkURLPaymentReturn = async () => {
     try {
@@ -127,24 +133,26 @@ export default function CustomerApp() {
   };
 
   const detectCustomerGPSAndLoadStore = () => {
-    if (Platform.OS === 'web' && navigator.geolocation) {
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           let lat = pos.coords.latitude;
           let lng = pos.coords.longitude;
           setCustLat(lat);
           setCustLng(lng);
-          loadStoreConfigAndCatalog(lat, lng);
+          loadStoreConfigAndLoadCatalog(lat, lng);
         },
-        () => loadStoreConfigAndCatalog(19.7280, 72.9150),
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 1000 }
+        () => {
+          loadStoreConfigAndLoadCatalog(19.7280, 72.9150);
+        },
+        { enableHighAccuracy: true, timeout: 20000, maximumAge: 1000 }
       );
     } else {
-      loadStoreConfigAndCatalog(19.7280, 72.9150);
+      loadStoreConfigAndLoadCatalog(19.7280, 72.9150);
     }
   };
 
-  const loadStoreConfigAndCatalog = (lat, lng) => {
+  const loadStoreConfigAndLoadCatalog = (lat, lng) => {
     fetch(db + ".json").then(r => r.json()).then(data => {
       if (!data) return;
       let currentSettings = storeSettings;
@@ -334,28 +342,33 @@ export default function CustomerApp() {
 
   const placeOrder = async () => {
     if (storeSettings.storeOpen === false) {
-      return Alert.alert("Store Closed", "Sorry! The store is currently closed. You cannot place orders right now.");
+      return Alert.alert("Store Closed", "Sorry! The store is currently closed. You cannot place orders right now[span_0](start_span)[span_0](end_span).");
     }
 
     let cleanName = sanitizeInput(custName);
     let cleanAddr = sanitizeInput(custAddr);
 
     if (!cleanName || cleanName.trim() === '') {
-      return Alert.alert("⚠️ Name Required", "Please enter your Full Name in delivery details!");
+      return Alert.alert("⚠️ Name Required", "Please enter your Full Name in delivery details[span_1](start_span)[span_1](end_span)!");
     }
     if (!cleanAddr || cleanAddr.trim() === '') {
-      return Alert.alert("⚠️ Address Required", "Please enter your Delivery Address!");
+      return Alert.alert("⚠️ Address Required", "Please enter your Delivery Address[span_2](start_span)[span_2](end_span)!");
     }
     if (!custPhone || custPhone.length !== 10) {
-      return Alert.alert("⚠️ Phone Error", "Valid 10-digit mobile number required.");
+      return Alert.alert("⚠️ Phone Error", "Valid 10-digit mobile number required[span_3](start_span)[span_3](end_span).");
     }
+
+    // STRICT GEOFENCE CHECK FOR ALL ORDERS
     if (!inRange) {
-      return Alert.alert("Outside Delivery Zone", `Sorry! Store delivers only within ${storeSettings.radiusKm} KM. (You are ${distanceKm} KM away)`);
+      return Alert.alert(
+        "🚫 Outside Delivery Zone", 
+        `Sorry! Store delivers only within ${storeSettings.radiusKm} KM. Your location is ${distanceKm} KM away, which is out of our delivery zone[span_4](start_span)[span_4](end_span).`
+      );
     }
 
     let minOrd = Number(storeSettings.minOrd || 0);
     if (minOrd > 0 && subtotal < minOrd) {
-      return Alert.alert("⚠️ Minimum Order Notice", `Store minimum order is ₹${minOrd}. Your subtotal is ₹${subtotal}.`);
+      return Alert.alert("⚠️ Minimum Order Notice", `Store minimum order is ₹${minOrd}. Your subtotal is ₹${subtotal}[span_5](start_span)[span_5](end_span).`);
     }
 
     let orderId = 'ord_' + Date.now();
@@ -387,16 +400,16 @@ export default function CustomerApp() {
             await Linking.openURL(targetUrl);
           } else {
             if (Platform.OS === 'web') window.location.href = targetUrl;
-            else Alert.alert("Error", "Cannot open payment link.");
+            else Alert.alert("Error", "Cannot open payment link[span_6](start_span)[span_6](end_span).");
           }
         } catch (e) {
           if (Platform.OS === 'web') window.location.href = targetUrl;
         }
       } else {
-        Alert.alert("🎉 Success", `Order #${orderId.slice(-6)} placed successfully!`);
+        Alert.alert("🎉 Success", `Order #${orderId.slice(-6)} placed successfully[span_7](start_span)[span_7](end_span)!`);
       }
     }).catch(err => {
-      Alert.alert("Error", "Failed to place order. Please try again.");
+      Alert.alert("Error", "Failed to place order. Please try again[span_8](start_span)[span_8](end_span).");
     });
   };
 
@@ -502,11 +515,19 @@ export default function CustomerApp() {
 
       <View style={s.hdr}>
         <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%', marginBottom: 6}}>
-          <Text style={s.ht} numberOfLines={1}>🛒 {storeSettings.store}</Text>
-          <Text style={{fontSize: 10, color: inRange ? '#e8f5e9' : '#ffcdd2', fontWeight: 'bold'}} numberOfLines={1}>
-            {inRange ? `📍 Inside Zone (${distanceKm} KM)` : `⚠️ Outside Zone (${distanceKm} KM / Limit: ${storeSettings.radiusKm} KM)`}
-          </Text>
+          <View style={{flex: 1, paddingRight: 6}}>
+            <Text style={s.ht} numberOfLines={1}>🛒 {storeSettings.store}</Text>
+            <Text style={{fontSize: 10, color: '#ffd54f', fontWeight: 'bold', marginTop: 2}} numberOfLines={1}>
+              📍 Delivery to: {custAddr ? custAddr : 'Enter address in Profile'}
+            </Text>
+          </View>
+          <View style={{backgroundColor: inRange ? '#2e7d32' : '#c62828', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6}}>
+            <Text style={{fontSize: 9.5, color: '#fff', fontWeight: 'bold'}} numberOfLines={1}>
+              {inRange ? `Inside (${distanceKm} KM)` : `Outside (${distanceKm} KM)`}
+            </Text>
+          </View>
         </View>
+
         <View style={{flexDirection: 'row', width: '100%', justifyContent: 'space-between'}}>
           {[
             { key: 'shop', label: '🛍️ Shop' },
@@ -605,7 +626,13 @@ export default function CustomerApp() {
                             key={idx} 
                             style={[s.gridCard, isSoldOut && {backgroundColor: '#f5f5f5'}]}
                           >
-                            {pr.image ? <Image source={{ uri: pr.image }} style={s.gridImg} /> : <View style={[s.gridImg, {justifyContent:'center', alignItems:'center', backgroundColor:'#f3e5f5'} ]}><Text style={{fontSize: 24}}>📦</Text></View>}
+                            {pr.image && pr.image.trim().startsWith('http') ? (
+                              <Image source={{ uri: pr.image.trim() }} style={s.gridImg} />
+                            ) : (
+                              <View style={[s.gridImg, {justifyContent:'center', alignItems:'center', backgroundColor:'#f3e5f5'}]}>
+                                <Text style={{fontSize: 24}}>📦</Text>
+                              </View>
+                            )}
                             
                             <View style={{flex: 1, justifyContent: 'space-between', width: '100%', marginTop: 4}}>
                               <Text style={{fontWeight: 'bold', fontSize: 12, color: '#222'}} numberOfLines={2}>{pr.name}</Text>
@@ -848,7 +875,7 @@ export default function CustomerApp() {
               </View>
 
               <TouchableOpacity style={[s.btn, {marginTop: 12, backgroundColor: inRange ? '#6a1b9a' : '#c62828', padding: 10}]} onPress={placeOrder}>
-                <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>{inRange ? (paymentMode === 'Online' ? `Pay ₹{finalTotal} via Razorpay & Place Order` : `Place COD Order (₹{finalTotal})`) : '⚠️ Outside Delivery Zone'}</Text>
+                <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>{inRange ? (paymentMode === 'Online' ? `Pay ₹{finalTotal} via Razorpay & Place Order` : `Place COD Order (₹{finalTotal})`) : '🚫 Outside Delivery Zone - Cannot Order'}</Text>
               </TouchableOpacity>
             </View>
           </ScrollView>
@@ -890,11 +917,11 @@ const s = StyleSheet.create({
   gridImg: { width: '100%', height: 110, borderRadius: 8, backgroundColor: '#f9f9f9', marginBottom: 6, resizeMode: 'contain' },
   gridAddBtn: { backgroundColor: '#6a1b9a', width: '100%', paddingVertical: 6, borderRadius: 6, alignItems: 'center', marginTop: 4 },
   
-  qtyCon: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 3, borderRadius: '6', marginTop: 4, justifyContent: 'space-between', width: '100%' },
+  qtyCon: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 3, borderRadius: 6, marginTop: 4, justifyContent: 'space-between', width: '100%' },
   qtyConCart: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 4, borderRadius: 6, justifyContent: 'space-between' },
   qtyBtn: { backgroundColor: '#6a1b9a', width: 24, height: 24, borderRadius: 4, justifyContent: 'center', alignItems: 'center' },
   
-  floatingCartBar: { position: 'absolute', bottom: 90, left: 10, right: 10, backgroundColor: '#4a148c', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', elevation: 8 },
+  floatingCartBar: { position: 'absolute', bottom: 80, left: 10, right: 10, backgroundColor: '#4a148c', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', elevation: 8 },
   viewCartBtn: { backgroundColor: '#ffd54f', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
   card: { backgroundColor: '#fff', padding: 10, borderRadius: 8, marginBottom: 8, borderWidth: 1, borderColor: '#d1c4e9', elevation: 2, width: '100%' },
   secTitle: { fontSize: 12, fontWeight: 'bold', color: '#4a148c', marginVertical: 4 },
@@ -906,6 +933,5 @@ const s = StyleSheet.create({
   catChip: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, backgroundColor: '#f3e5f5', marginRight: 5, marginBottom: 5, borderWidth: 1, borderColor: '#ce93d8' },
   catChipAct: { backgroundColor: '#6a1b9a', borderColor: '#6a1b9a' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 15, width: '100%' },
-  modalCard: { width: '100%', maxWidth: 350, backgroundColor: '#fff', padding: 15, borderRadius: 14, elevation: 8 },
-  modalTitle: { fontSize: 15, fontWeight: 'bold', color: '#4a148c', marginBottom: 4 }
+  modalCard: { width: '100%', maxWidth: 350, backgroundColor: '#fff', padding: 15, borderRadius: 14, elevation: 8 }
 });
