@@ -1,9 +1,12 @@
 // --- MANOR MART ADVANCED INSTAMART-STYLE CUSTOMER APP ---
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, SafeAreaView, Modal, Image, Platform, BackHandler, Linking } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  StyleSheet, Text, View, TextInput, TouchableOpacity, 
+  ScrollView, Alert, SafeAreaView, Modal, Image, 
+  Platform, BackHandler, Linking 
+} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
-import * as ExpoLinking from 'expo-linking';
 
 const db = "https://manorbiryani-default-rtdb.firebaseio.com/";
 
@@ -16,9 +19,9 @@ export default function CustomerApp() {
     normCharge: '0',
     expCharge: '30',
     freeDel: '0',
-    hubLat: '19.6967',
-    hubLng: '72.7699',
-    radiusKm: '10',
+    hubLat: '19.7244',
+    hubLng: '72.9097',
+    radiusKm: '2',
     adminNote: '',
     bgImage: '',
     storeOpen: true,
@@ -36,8 +39,8 @@ export default function CustomerApp() {
   const [termsAccepted, setTermsAccepted] = useState(true);
   const [showLegalModal, setShowLegalModal] = useState(false);
 
-  const [custLat, setCustLat] = useState(19.6967);
-  const [custLng, setCustLng] = useState(72.7699);
+  const [custLat, setCustLat] = useState(19.7244);
+  const [custLng, setCustLng] = useState(72.9097);
   const [distanceKm, setDistanceKm] = useState(0);
   const [inRange, setInRange] = useState(true);
 
@@ -55,37 +58,50 @@ export default function CustomerApp() {
   const [myOrders, setMyOrders] = useState([]);
   const [deliveryBoysList, setDeliveryBoysList] = useState({});
   const [deleteStepOrder, setDeleteStepOrder] = useState(null);
+  const [cancelStepOrder, setCancelStepOrder] = useState(null);
+
+  const gpsFetchedRef = useRef(false);
 
   useEffect(() => {
     checkInitialTermsAgreement();
-    detectCustomerGPSAndLoadStore();
     checkSavedCustomerSession();
     checkURLPaymentReturn();
 
+    if (!gpsFetchedRef.current) {
+      detectGPSAndLoadStore(false);
+    }
+
     const handleDeepLink = async (event) => {
+      if (!event?.url) return;
       try {
-        let data = ExpoLinking.parse(event.url);
-        if (data.queryParams?.razorpay_payment_id || data.queryParams?.status === 'success' || (event.url && event.url.includes('success'))) {
+        let urlStr = event.url;
+        if (urlStr.includes('success') || urlStr.includes('razorpay_payment_id')) {
           let pendingOrderId = await AsyncStorage.getItem('manor_pending_ord');
           if (pendingOrderId) {
             await verifyAndConfirmOrder(pendingOrderId);
+          } else {
+            let phone = custPhone || await AsyncStorage.getItem('manor_cust_phone');
+            if (phone) fetchCustomerOrders(phone);
+            setActiveTab('orders');
           }
         }
       } catch (e) {}
     };
 
-    const sub = ExpoLinking.addEventListener('url', handleDeepLink);
+    const sub = Linking.addEventListener('url', handleDeepLink);
 
-    ExpoLinking.getInitialURL().then(async (url) => {
-      try {
-        if (url && (url.includes('success') || url.includes('razorpay_payment_id'))) {
-          let pendingOrderId = await AsyncStorage.getItem('manor_pending_ord');
-          if (pendingOrderId) {
-            await verifyAndConfirmOrder(pendingOrderId);
-          }
+    Linking.getInitialURL().then(async (url) => {
+      if (url && (url.includes('success') || url.includes('razorpay_payment_id'))) {
+        let pendingOrderId = await AsyncStorage.getItem('manor_pending_ord');
+        if (pendingOrderId) {
+          await verifyAndConfirmOrder(pendingOrderId);
+        } else {
+          let phone = custPhone || await AsyncStorage.getItem('manor_cust_phone');
+          if (phone) fetchCustomerOrders(phone);
+          setActiveTab('orders');
         }
-      } catch (e) {}
-    });
+      }
+    }).catch(() => {});
 
     const autoRefreshInterval = setInterval(() => {
       fetch(db + ".json").then(r => r.json()).then(data => {
@@ -99,7 +115,7 @@ export default function CustomerApp() {
         }
         if (data.categories) setCategories(data.categories);
         if (data.deliveryBoys) setDeliveryBoysList(data.deliveryBoys);
-      }).catch(e => {});
+      }).catch(() => {});
 
       if (custPhone) {
         fetchCustomerOrders(custPhone);
@@ -108,7 +124,7 @@ export default function CustomerApp() {
 
     return () => {
       clearInterval(autoRefreshInterval);
-      sub.remove();
+      if (sub && sub.remove) sub.remove();
     };
   }, [custPhone, custLat, custLng]);
 
@@ -119,6 +135,10 @@ export default function CustomerApp() {
         return true;
       }
       if (activeTab === 'cart') {
+        setActiveTab('shop');
+        return true;
+      }
+      if (activeTab === 'orders' || activeTab === 'profile') {
         setActiveTab('shop');
         return true;
       }
@@ -153,10 +173,10 @@ export default function CustomerApp() {
 
   const checkURLPaymentReturn = async () => {
     try {
-      if (Platform.OS === 'web') {
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
         const urlParams = new URLSearchParams(window.location.search);
-        if (urlParams.get('payment') === 'success' || urlParams.get('status') === 'success' || urlParams.get('razorpay_payment_id')) {
-          let pendingOrderId = await AsyncStorage.getItem('manor_pending_ord');
+        if (urlParams.get('status') === 'success' || urlParams.get('razorpay_payment_id')) {
+          let pendingOrderId = urlParams.get('order_id') || await AsyncStorage.getItem('manor_pending_ord');
           if (pendingOrderId) {
             await verifyAndConfirmOrder(pendingOrderId);
           }
@@ -172,11 +192,12 @@ export default function CustomerApp() {
         body: JSON.stringify('Order Successful')
       });
       await AsyncStorage.removeItem('manor_pending_ord');
-      Alert.alert("🎉 Payment Successful", "Online payment verified automatically and order confirmed!");
-      if (custPhone) fetchCustomerOrders(custPhone);
+      let phone = custPhone || await AsyncStorage.getItem('manor_cust_phone');
+      if (phone) fetchCustomerOrders(phone);
       setActiveTab('orders');
+      Alert.alert("🎉 Payment Successful", "Payment verified and order confirmed successfully!");
     } catch(e) {
-      Alert.alert("Error", "Failed to verify payment status.");
+      setActiveTab('orders');
     }
   };
 
@@ -202,44 +223,57 @@ export default function CustomerApp() {
     } catch(e) {}
   };
 
-  const detectCustomerGPSAndLoadStore = async () => {
+  const detectGPSAndLoadStore = async (forceManual = false) => {
+    if (gpsFetchedRef.current && !forceManual) {
+      loadStoreConfig(custLat, custLng);
+      return;
+    }
+
     try {
       if (Platform.OS === 'web') {
         if (typeof navigator !== 'undefined' && navigator.geolocation) {
           navigator.geolocation.getCurrentPosition(
             (pos) => {
-              let lat = pos.coords.latitude;
-              let lng = pos.coords.longitude;
-              setCustLat(lat);
-              setCustLng(lng);
-              loadStoreConfigAndLoadCatalog(lat, lng);
+              gpsFetchedRef.current = true;
+              setCustLat(pos.coords.latitude);
+              setCustLng(pos.coords.longitude);
+              loadStoreConfig(pos.coords.latitude, pos.coords.longitude);
             },
-            () => loadStoreConfigAndLoadCatalog(19.6967, 72.7699),
-            { enableHighAccuracy: true, timeout: 20000, maximumAge: 1000 }
+            () => {
+              gpsFetchedRef.current = true;
+              loadStoreConfig(custLat, custLng);
+            },
+            { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
           );
         } else {
-          loadStoreConfigAndLoadCatalog(19.6967, 72.7699);
+          loadStoreConfig(custLat, custLng);
         }
       } else {
-        let { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          loadStoreConfigAndLoadCatalog(19.6967, 72.7699);
-          return;
-        }
+        let { status } = await Location.requestForegroundPermissionsAsync().catch(() => ({ status: 'denied' }));
+        if (status === 'granted') {
+          let loc = await Location.getCurrentPositionAsync({ 
+            accuracy: Location.Accuracy.Lowest,
+            maximumAge: 60000 
+          }).catch(() => null);
 
-        let loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        let lat = loc.coords.latitude;
-        let lng = loc.coords.longitude;
-        setCustLat(lat);
-        setCustLng(lng);
-        loadStoreConfigAndLoadCatalog(lat, lng);
+          if (loc?.coords) {
+            gpsFetchedRef.current = true;
+            setCustLat(loc.coords.latitude);
+            setCustLng(loc.coords.longitude);
+            loadStoreConfig(loc.coords.latitude, loc.coords.longitude);
+            if (forceManual) Alert.alert("📍 Location Updated", "Your location has been refreshed.");
+            return;
+          }
+        }
+        gpsFetchedRef.current = true;
+        loadStoreConfig(custLat, custLng);
       }
-    } catch (error) {
-      loadStoreConfigAndLoadCatalog(19.6967, 72.7699);
+    } catch (e) {
+      loadStoreConfig(custLat, custLng);
     }
   };
 
-  const loadStoreConfigAndLoadCatalog = (lat, lng) => {
+  const loadStoreConfig = (lat, lng) => {
     fetch(db + ".json").then(r => r.json()).then(data => {
       if (!data) return;
       let currentSettings = storeSettings;
@@ -247,33 +281,19 @@ export default function CustomerApp() {
         currentSettings = { ...storeSettings, ...data.settings };
         setStoreSettings(currentSettings);
       }
-      if (data.categories) {
-        setCategories(data.categories);
-      }
+      if (data.categories) setCategories(data.categories);
       if (data.deliveryBoys) setDeliveryBoysList(data.deliveryBoys);
 
       calcGeoFence(lat, lng, currentSettings.hubLat, currentSettings.hubLng, currentSettings.radiusKm);
-    }).catch(e => {});
+    }).catch(() => {});
   };
 
   const calcGeoFence = (lat, lng, hLat, hLng, rad) => {
-    let customerLat = Number(lat);
-    let customerLng = Number(lng);
-    let hubLat = Number(hLat);
-    let hubLng = Number(hLng);
-    let allowedRadius = Number(rad);
-
-    if (isNaN(customerLat) || isNaN(customerLng)) {
-      customerLat = 19.6967;
-      customerLng = 72.7699;
-    }
-    if (isNaN(hubLat) || isNaN(hubLng) || hubLat === 0 || hubLng === 0) {
-      hubLat = 19.6967;
-      hubLng = 72.7699;
-    }
-    if (isNaN(allowedRadius) || allowedRadius <= 0) {
-      allowedRadius = 10;
-    }
+    let customerLat = Number(lat) || 19.7244;
+    let customerLng = Number(lng) || 72.9097;
+    let hubLat = Number(hLat) || 19.7244;
+    let hubLng = Number(hLng) || 72.9097;
+    let allowedRadius = Number(rad) || 2;
 
     let R = 6371;
     let dLat = (customerLat - hubLat) * (Math.PI / 180);
@@ -285,24 +305,36 @@ export default function CustomerApp() {
     let c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     let d = R * c;
 
-    if (isNaN(d)) {
-      setDistanceKm(0);
-      setInRange(true);
-      return;
-    }
-
-    let distRounded = Number(d.toFixed(2));
+    let distRounded = isNaN(d) ? 0 : Number(d.toFixed(2));
     setDistanceKm(distRounded);
-    setInRange(distRounded <= allowedRadius);
+
+    const allowed = distRounded <= allowedRadius;
+    setInRange(allowed);
   };
 
   const sanitizeInput = (str) => (str || '').replace(/[.#$[\]/]/g, '').trim();
 
-  // Safe Cart Quantity Updater to prevent crashes
+  const formatOrderDateTime = (ts) => {
+    if (!ts) return '';
+    try {
+      const d = new Date(Number(ts));
+      return d.toLocaleString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+    } catch(e) {
+      return '';
+    }
+  };
+
   const updateCartQty = (prod, delta) => {
     if (!prod || !prod.id) return;
     if (prod.inStock === false) {
-      return Alert.alert("Out of Stock", "Sorry! This item is currently sold out.");
+      return Alert.alert("Out of Stock", "Sorry, this item is out of stock.");
     }
     let pKey = prod.id;
     let priceVal = Number(prod.price || 0);
@@ -347,21 +379,22 @@ export default function CustomerApp() {
 
   const handleLogin = async () => {
     let cleanPh = (loginPhoneInput || '').replace(/[^0-9]/g, '').trim();
-    if (cleanPh.length !== 10) return Alert.alert("Error", "Enter valid 10-digit phone number!");
+    if (cleanPh.length !== 10) return Alert.alert("Invalid Phone", "Please enter a valid 10-digit mobile number!");
     setCustPhone(cleanPh);
     setIsLoggedIn(true);
     await AsyncStorage.setItem('manor_cust_phone', cleanPh);
     fetchCustomerOrders(cleanPh);
-    Alert.alert("Success", "Logged in successfully!");
+    Alert.alert("Welcome", "Logged in successfully!");
   };
 
   const fetchCustomerOrders = (phone) => {
+    if (!phone) return;
     fetch(db + "orders.json").then(r => r.json()).then(data => {
       if (!data) return setMyOrders([]);
       let list = Object.keys(data).map(k => ({ id: k, ...data[k] }));
       let mine = list.filter(o => o.phone === phone);
       setMyOrders(mine.reverse());
-    }).catch(e => {});
+    }).catch(() => {});
   };
 
   const handleLogout = async () => {
@@ -370,7 +403,18 @@ export default function CustomerApp() {
     await AsyncStorage.removeItem('manor_cust_addr');
     await AsyncStorage.removeItem('manor_cust_addrs_list');
     setIsLoggedIn(false); setCart({}); setActiveTab('shop');
-    Alert.alert("Logged Out", "Session cleared.");
+    Alert.alert("Logged Out", "Your session has been cleared.");
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      "Delete Account",
+      "Are you sure you want to delete your account and saved addresses?",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Yes, Delete", onPress: handleLogout, style: "destructive" }
+      ]
+    );
   };
 
   const handleExitApp = () => {
@@ -382,64 +426,40 @@ export default function CustomerApp() {
         { text: "Exit", onPress: () => {
             if (Platform.OS === 'android') {
               BackHandler.exitApp();
-            } else {
-              window.close();
             }
           }, style: "destructive" }
       ]
     );
   };
 
-  const cancelOrder = (orderId, currentStatus, paymentModeVal) => {
+  const handleCancelOrderAction = (orderId, currentStatus, paymentModeVal) => {
     if (currentStatus === 'Delivered' || currentStatus === 'Out for Delivery') {
-      return Alert.alert("Cannot Cancel", "Order is already out for delivery or delivered.");
+      return Alert.alert("Notice", "Order cannot be cancelled once dispatched.");
     }
-    
-    const executeCancel = () => {
-      let newCancelStatus = '❌ Order Cancelled';
-      let needsRefund = false;
 
-      if (paymentModeVal === 'Online') {
-        if (currentStatus && currentStatus.includes('Payment Pending')) {
-          newCancelStatus = '❌ Cancelled (Unpaid)';
-          needsRefund = false;
-        } else {
-          newCancelStatus = '❌ Cancelled (Paid - Refundable)';
-          needsRefund = true;
-        }
-      } else {
-        newCancelStatus = '❌ Order Cancelled (COD)';
-        needsRefund = false;
-      }
+    if (cancelStepOrder === orderId) {
+      setCancelStepOrder(null);
+      let newCancelStatus = paymentModeVal === 'Online'
+        ? (currentStatus?.includes('Payment Pending') ? '❌ Cancelled (Unpaid)' : '❌ Cancelled (Paid - Refundable)')
+        : '❌ Order Cancelled (COD)';
 
       fetch(db + `orders/${orderId}.json`, {
         method: 'PATCH',
         body: JSON.stringify({ deliveryStatus: newCancelStatus })
       }).then(() => {
         fetchCustomerOrders(custPhone);
-        if (needsRefund) {
-          Alert.alert("Cancelled", "Your order has been cancelled. Online payment will be refunded within 5 to 7 business days per store policy.");
-        } else {
-          Alert.alert("Cancelled", "Your order has been cancelled successfully. No payment was charged.");
-        }
+        Alert.alert(
+          "Order Cancelled", 
+          paymentModeVal === 'Online' && !currentStatus?.includes('Payment Pending')
+            ? "Your order has been cancelled. Your refund will be credited to the source payment account within 5 to 7 business days."
+            : "Your order has been cancelled successfully."
+        );
       }).catch(() => {
-        Alert.alert("Error", "Failed to cancel order. Try again.");
+        Alert.alert("Error", "Network problem, please try again.");
       });
-    };
-
-    if (Platform.OS === 'web') {
-      if (window.confirm("Are you sure you want to cancel this order?")) {
-        executeCancel();
-      }
     } else {
-      Alert.alert(
-        "Cancel Order",
-        "Are you sure you want to cancel this order?",
-        [
-          { text: "No", style: "cancel" },
-          { text: "Yes, Cancel", onPress: executeCancel, style: "destructive" }
-        ]
-      );
+      setCancelStepOrder(orderId);
+      setTimeout(() => setCancelStepOrder(null), 4000);
     }
   };
 
@@ -448,7 +468,7 @@ export default function CustomerApp() {
       fetch(db + `orders/${orderId}.json`, { method: 'DELETE' }).then(() => {
         setDeleteStepOrder(null);
         fetchCustomerOrders(custPhone);
-        Alert.alert("Deleted", "Order removed successfully.");
+        Alert.alert("Deleted", "Order removed from history.");
       });
     } else {
       setDeleteStepOrder(orderId);
@@ -456,57 +476,45 @@ export default function CustomerApp() {
     }
   };
 
-  const getDeliveryBoyPhone = (boyName) => {
-    for (let k in deliveryBoysList) {
-      if (deliveryBoysList[k].name === boyName) return deliveryBoysList[k].phone;
-    }
-    return '';
-  };
-
   const saveCurrentAddress = async () => {
     let cleanAddr = sanitizeInput(custAddr);
-    if (!cleanAddr) return Alert.alert("Error", "Enter address to save!");
+    if (!cleanAddr) return Alert.alert("Required", "Please type an address to save!");
     let updatedAddrs = [...savedAddresses];
     if (!updatedAddrs.includes(cleanAddr)) {
       updatedAddrs.push(cleanAddr);
       setSavedAddresses(updatedAddrs);
       await AsyncStorage.setItem('manor_cust_addrs_list', JSON.stringify(updatedAddrs));
-      Alert.alert("Saved", "Address added to saved addresses list!");
+      Alert.alert("Saved", "Address added to your saved list!");
     }
   };
 
   const placeOrder = async () => {
     if (storeSettings.storeOpen === false) {
-      return Alert.alert("Store Closed", "Sorry! The store is currently closed. You cannot place orders right now.");
+      return Alert.alert("Store Closed", "Store is currently closed.");
     }
 
     let cleanName = sanitizeInput(custName);
     let cleanAddr = sanitizeInput(custAddr);
 
-    if (!cleanName || cleanName.trim() === '') {
-      return Alert.alert("⚠️ Name Required", "Please enter your Full Name in delivery details!");
-    }
-    if (!cleanAddr || cleanAddr.trim() === '') {
-      return Alert.alert("⚠️ Address Required", "Please enter your Delivery Address!");
-    }
-    if (!custPhone || custPhone.length !== 10) {
-      return Alert.alert("⚠️ Phone Error", "Valid 10-digit mobile number required.");
-    }
+    if (!cleanName) return Alert.alert("Name Required", "Please enter your full name!");
+    if (!cleanAddr) return Alert.alert("Address Required", "Please enter your delivery address!");
+    if (!custPhone || custPhone.length !== 10) return Alert.alert("Phone Required", "Please verify your 10-digit phone number.");
 
     if (!inRange) {
       return Alert.alert(
         "🚫 Outside Delivery Zone", 
-        `Sorry! Store delivers only within ${storeSettings.radiusKm} KM. Your location is ${distanceKm} KM away, which is out of our delivery zone.`
+        `Delivery is restricted to ${storeSettings.radiusKm} KM from store hub. You are currently ${distanceKm} KM away.`
       );
     }
 
     let minOrd = Number(storeSettings.minOrd || 0);
     if (minOrd > 0 && subtotal < minOrd) {
-      return Alert.alert("⚠️ Minimum Order Notice", `Store minimum order is ₹${minOrd}. Your subtotal is ₹${subtotal}.`);
+      return Alert.alert("Minimum Order Limit", `Minimum order amount is ₹${minOrd}.`);
     }
 
     let orderId = 'ord_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
     let initialStatus = paymentMode === 'Online' ? '⏳ Payment Pending' : 'Order Successful';
+    let currentTimestamp = Date.now();
 
     let orderObj = {
       id: orderId, 
@@ -525,7 +533,7 @@ export default function CustomerApp() {
       payment: paymentMode, 
       deliveryStatus: initialStatus, 
       assignedBoy: '', 
-      timestamp: Date.now()
+      timestamp: currentTimestamp
     };
 
     fetch(db + `orders/${orderId}.json`, {
@@ -533,28 +541,24 @@ export default function CustomerApp() {
       body: JSON.stringify(orderObj)
     }).then(async () => {
       setCart({});
-      setActiveTab('orders');
-      fetchCustomerOrders(custPhone);
-
       if (paymentMode === 'Online') {
         await AsyncStorage.setItem('manor_pending_ord', orderId);
         let customBaseUrl = storeSettings.upi && storeSettings.upi.trim().startsWith('http') 
           ? storeSettings.upi.trim() 
           : 'https://shabaj9769-alt.github.io/manormart-pay/';
-        let targetUrl = `${customBaseUrl}?amount=${finalTotal}&order_id=${orderId}`;
         
-        if (Platform.OS === 'web') {
-          window.location.href = targetUrl;
-        } else {
-          Linking.openURL(targetUrl).catch(() => {
-            Alert.alert("Browser Error", "Payment link open nahi ho paya. Kripya phone ka browser check karein.");
-          });
-        }
+        let targetUrl = `${customBaseUrl}?amount=${finalTotal}&order_id=${orderId}&app_scheme=manormart`;
+        
+        Linking.openURL(targetUrl).catch(() => {
+          Alert.alert("Browser Error", "Unable to open payment checkout page.");
+        });
       } else {
-        Alert.alert("🎉 Success", `Order #${orderId.slice(-6)} placed successfully!`);
+        setActiveTab('orders');
+        fetchCustomerOrders(custPhone);
+        Alert.alert("Order Placed", `Order #${orderId.slice(-6)} placed successfully!`);
       }
-    }).catch(err => {
-      Alert.alert("Error", "Failed to place order: " + (err.message || "Check network"));
+    }).catch(() => {
+      Alert.alert("Error", "Could not process order. Please check your network.");
     });
   };
 
@@ -569,24 +573,24 @@ export default function CustomerApp() {
         <View style={{marginVertical: 6, backgroundColor: '#fff3e0', padding: 8, borderRadius: 6, borderWidth: 1, borderColor: '#ffb74d', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'}}>
           <View>
             <Text style={{fontSize: 11, color: '#e65100', fontWeight: 'bold'}}>⏳ Awaiting Payment Completion</Text>
-            <Text style={{fontSize: 9.5, color: '#666', marginTop: 2}}>Agar payment ho gaya hai, toh check karein:</Text>
+            <Text style={{fontSize: 9.5, color: '#666', marginTop: 2}}>Tap check if payment is done:</Text>
           </View>
           <TouchableOpacity onPress={() => {
             fetch(db + `orders/${orderId}.json`).then(r => r.json()).then(ord => {
               if (ord && ord.deliveryStatus === 'Order Successful') {
-                Alert.alert("Verified!", "Payment verified and order confirmed!");
+                Alert.alert("Verified!", "Payment confirmed successfully!");
                 fetchCustomerOrders(custPhone);
               } else {
-                Alert.alert("Pending", "Payment abhi confirm nahi hui hai ya app band ho gayi thi. Dobara try karein.");
+                Alert.alert("Pending", "Payment has not been confirmed yet.");
               }
             });
           }} style={{backgroundColor: '#e65100', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 5}}>
-            <Text style={{color: '#fff', fontSize: 10, fontWeight: 'bold'}}>🔄 Check Status</Text>
+            <Text style={{color: '#fff', fontSize: 10, fontWeight: 'bold'}}>🔄 Check</Text>
           </TouchableOpacity>
         </View>
       );
     } else if (status && status.includes('Cancelled')) {
-      return <Text style={{fontSize: 10, color: status.includes('Unpaid') ? '#757575' : '#c62828', fontWeight: 'bold'}}>{status}</Text>;
+      return <Text style={{fontSize: 10, color: status.includes('Unpaid') ? '#757575' : '#c62828', fontWeight: 'bold', marginVertical: 4}}>{status}</Text>;
     }
 
     return (
@@ -651,33 +655,20 @@ export default function CustomerApp() {
           </View>
 
           <View style={s.policyBlock}>
-            <Text style={s.policyBlockTitle}>2. Account & Eligibility</Text>
-            <Text style={s.policyText}>• Customers must provide an active, valid 10-digit Indian mobile number to log in and use our service.</Text>
-            <Text style={s.policyText}>• Customers are responsible for providing complete and accurate recipient details and delivery addresses.</Text>
-          </View>
-
-          <View style={s.policyBlock}>
-            <Text style={s.policyBlockTitle}>3. Pricing & Orders</Text>
-            <Text style={s.policyText}>• All prices listed on the application are in Indian Rupees (INR) and include applicable taxes.</Text>
-            <Text style={s.policyText}>• Delivery fees (Normal or Express) and free-delivery eligibility are calculated transparently at checkout.</Text>
-          </View>
-
-          <View style={s.policyBlock}>
-            <Text style={s.policyBlockTitle}>4. Cancellation & Refund Policy (5 to 7 Days)</Text>
+            <Text style={s.policyBlockTitle}>2. Cancellation & Refund Policy (5 to 7 Days)</Text>
             <Text style={s.policyText}>• Customers can cancel orders directly through the app before dispatch ("Out for Delivery").</Text>
-            <Text style={s.policyText}>• In case of cancellation before dispatch or spoiled/damaged items, refunds for prepaid online payments (Razorpay, UPI, Cards) are credited back to the original source payment account within 5 to 7 business days.</Text>
-            <Text style={s.policyText}>• For Cash on Delivery (COD) orders, billing invoices are adjusted immediately on the spot.</Text>
+            <Text style={s.policyText}>• In case of cancellation before dispatch, refunds for prepaid online payments (Razorpay, UPI) are credited back to the source account within 5 to 7 business days.</Text>
           </View>
 
           <View style={s.policyBlock}>
-            <Text style={s.policyBlockTitle}>5. Privacy & User Data Protection</Text>
+            <Text style={s.policyBlockTitle}>3. Privacy & User Data Protection</Text>
             <Text style={s.policyText}>• We collect phone number, name, delivery address, and GPS coordinates solely for delivery routing and geofencing verification.</Text>
-            <Text style={s.policyText}>• We never sell, rent, or trade your personal information to third parties.</Text>
-            <Text style={s.policyText}>• Users can clear their profile details or delete their account directly within the Profile section.</Text>
+            <Text style={s.policyText}>• We never sell, rent, or trade personal data to third parties.</Text>
+            <Text style={s.policyText}>• Users have full rights to wipe their saved details or delete their account in Profile.</Text>
           </View>
 
           <View style={s.policyBlock}>
-            <Text style={s.policyBlockTitle}>6. Grievance & Official Support</Text>
+            <Text style={s.policyBlockTitle}>4. Grievance & Official Support</Text>
             <Text style={s.policyText}>• Business Name: Manor Mart</Text>
             <Text style={s.policyText}>• Operational Region: Manor, Palghar, Maharashtra - 401403</Text>
             <Text style={s.policyText}>• Official Support Email: shabaj9769@gmail.com</Text>
@@ -753,8 +744,8 @@ export default function CustomerApp() {
             </Text>
           </View>
           <View style={{flexDirection: 'row', alignItems: 'center'}}>
-            <TouchableOpacity onPress={detectCustomerGPSAndLoadStore} style={{backgroundColor: '#7b1fa2', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, marginRight: 6}}>
-              <Text style={{fontSize: 9.5, color: '#fff', fontWeight: 'bold'}}>🔄 Refresh GPS</Text>
+            <TouchableOpacity onPress={() => detectGPSAndLoadStore(true)} style={{backgroundColor: '#7b1fa2', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, marginRight: 6}}>
+              <Text style={{fontSize: 9.5, color: '#fff', fontWeight: 'bold'}}>🔄 GPS</Text>
             </TouchableOpacity>
             <View style={{backgroundColor: inRange ? '#2e7d32' : '#c62828', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6}}>
               <Text style={{fontSize: 9.5, color: '#fff', fontWeight: 'bold'}} numberOfLines={1}>
@@ -782,7 +773,7 @@ export default function CustomerApp() {
 
       {storeSettings.storeOpen === false && (
         <View style={{backgroundColor: '#c62828', padding: 10, alignItems: 'center', width: '100%'}}>
-          <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 12}}>🔴 Store is Currently Closed! You cannot place orders right now.</Text>
+          <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 12}}>🔴 Store is Currently Closed! Orders are temporarily suspended.</Text>
         </View>
       )}
 
@@ -797,7 +788,7 @@ export default function CustomerApp() {
         </View>
       )}
 
-      <ScrollView style={s.body} contentContainerStyle={{ paddingBottom: 130, width: '100%', paddingHorizontal: 8 }}>
+      <ScrollView style={s.body} contentContainerStyle={{ paddingBottom: 150, width: '100%', paddingHorizontal: 8 }}>
         {activeTab === 'shop' && (
           <View style={{width: '100%'}}>
             {storeSettings.adminNote ? (
@@ -843,7 +834,9 @@ export default function CustomerApp() {
 
             {!inRange && (
               <View style={s.warningBox}>
-                <Text style={{fontSize: 10.5, color: '#c62828', fontWeight: 'bold', textAlign: 'center'}}>⚠️ You are {distanceKm} KM away from store. Admin limit is {storeSettings.radiusKm} KM. Orders disabled.</Text>
+                <Text style={{fontSize: 11, color: '#c62828', fontWeight: 'bold', textAlign: 'center'}}>
+                  🚫 You are {distanceKm} KM away from store. Admin delivery limit is {storeSettings.radiusKm} KM. Orders are disabled.
+                </Text>
               </View>
             )}
 
@@ -851,7 +844,7 @@ export default function CustomerApp() {
               <View style={{width: '100%'}}>
                 <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8}}>
                   <TouchableOpacity onPress={() => { setSelectedCat(''); setSearchQuery(''); }} style={{backgroundColor: '#6a1b9a', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6}}>
-                    <Text style={{color: '#fff', fontSize: 11, fontWeight: 'bold'}}>← Back to Home</Text>
+                    <Text style={{color: '#fff', fontSize: 11, fontWeight: 'bold'}}>← Back to Categories</Text>
                   </TouchableOpacity>
                   <Text style={{fontWeight: 'bold', fontSize: 12, color: '#4a148c'}} numberOfLines={1}>
                     {searchQuery ? `Search: "${searchQuery}"` : `📁 ${selectedCat}`}
@@ -869,10 +862,7 @@ export default function CustomerApp() {
                         let isSoldOut = pr.inStock === false;
 
                         return (
-                          <View 
-                            key={idx} 
-                            style={[s.gridCard, isSoldOut && {backgroundColor: '#f5f5f5'}]}
-                          >
+                          <View key={idx} style={[s.gridCard, isSoldOut && {backgroundColor: '#f5f5f5'}]}>
                             {pr.image && typeof pr.image === 'string' && pr.image.trim().startsWith('http') ? (
                               <Image source={{ uri: pr.image.trim() }} style={s.gridImg} />
                             ) : (
@@ -900,7 +890,17 @@ export default function CustomerApp() {
                                 <Text style={{color: '#fff', fontSize: 9.5, fontWeight: 'bold'}}>STORE CLOSED</Text>
                               </View>
                             ) : cartQty === 0 ? (
-                              <TouchableOpacity onPress={() => { inRange && updateCartQty(pr, 1); }} style={[s.gridAddBtn, !inRange && {backgroundColor: '#b0bec5'}]}><Text style={{color: '#fff', fontSize: 11, fontWeight: 'bold'}}>ADD +</Text></TouchableOpacity>
+                              <TouchableOpacity 
+                                onPress={() => {
+                                  if (!inRange) {
+                                    return Alert.alert("Outside Delivery Zone", `Delivery is restricted to ${storeSettings.radiusKm} KM. You are ${distanceKm} KM away.`);
+                                  }
+                                  updateCartQty(pr, 1);
+                                }} 
+                                style={[s.gridAddBtn, !inRange && {backgroundColor: '#b0bec5'}]}
+                              >
+                                <Text style={{color: '#fff', fontSize: 11, fontWeight: 'bold'}}>ADD +</Text>
+                              </TouchableOpacity>
                             ) : (
                               <View style={s.qtyCon}>
                                 <TouchableOpacity onPress={() => updateCartQty(pr, -1)} style={s.qtyBtn}><Text style={{color:'#fff', fontWeight:'bold', fontSize: 14}}>-</Text></TouchableOpacity>
@@ -932,46 +932,47 @@ export default function CustomerApp() {
               <Text style={{textAlign: 'center', color: '#777', padding: 15, fontSize: 11}}>No orders placed yet.</Text>
             ) : (
               myOrders.map(ord => {
-                let boyPhone = getDeliveryBoyPhone(ord.assignedBoy);
                 let isDeleting = deleteStepOrder === ord.id;
+                let isCancelling = cancelStepOrder === ord.id;
                 let isWaitingPayment = ord.deliveryStatus && ord.deliveryStatus.includes('Payment Pending');
                 let isCancelled = ord.deliveryStatus && ord.deliveryStatus.includes('Cancelled');
+                let orderTimeFormatted = formatOrderDateTime(ord.timestamp);
 
                 return (
                   <View key={ord.id} style={[s.card, {borderColor: isWaitingPayment ? '#e65100' : isCancelled ? '#c62828' : '#8e24aa', borderWidth: 1.2, padding: 10, width: '100%'}]}>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <Text style={{ fontWeight: 'bold', color: '#6a1b9a', fontSize: 11.5 }}>ORDER #{ord.id.slice(-6)}</Text>
+                      <Text style={{ fontWeight: 'bold', color: '#6a1b9a', fontSize: 12 }}>ORDER #{ord.id.slice(-6)}</Text>
                       <View style={{flexDirection: 'row', alignItems: 'center'}}>
                         <View style={{backgroundColor: ord.payment === 'Online' ? '#e1bee7' : '#c8e6c9', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginRight: 6}}>
                           <Text style={{fontSize: 9, fontWeight: 'bold', color: ord.payment === 'Online' ? '#4a148c' : '#1b5e20'}}>
                             {ord.payment === 'Online' ? '💳 Online' : '💵 COD'}
                           </Text>
                         </View>
-                        <Text style={{ fontWeight: 'bold', color: '#2e7d32', marginRight: 6, fontSize: 11.5 }}>₹{ord.total}</Text>
+                        <Text style={{ fontWeight: 'bold', color: '#2e7d32', marginRight: 6, fontSize: 12 }}>₹{ord.total}</Text>
                         <TouchableOpacity onPress={() => confirmDeleteOrder(ord.id)} style={{backgroundColor: isDeleting ? '#b71c1c' : '#c62828', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 3}}>
                           <Text style={{color: '#fff', fontSize: 8.5, fontWeight: 'bold'}}>{isDeleting ? '⚠️ Tap' : '🗑️'}</Text>
                         </TouchableOpacity>
                       </View>
                     </View>
+
+                    {orderTimeFormatted ? (
+                      <Text style={{fontSize: 9.5, color: '#555', marginTop: 2, marginBottom: 4}}>
+                        🕒 Placed on: <Text style={{fontWeight: 'bold', color: '#333'}}>{orderTimeFormatted}</Text>
+                      </Text>
+                    ) : null}
                     
                     {renderTimelineTracker(ord.deliveryStatus, ord.id)}
 
                     {!isCancelled && !ord.deliveryStatus?.includes('Delivered') && !ord.deliveryStatus?.includes('Out for Delivery') && (
-                      <TouchableOpacity onPress={() => cancelOrder(ord.id, ord.deliveryStatus, ord.payment)} style={{backgroundColor: '#d32f2f', padding: 5, borderRadius: 5, marginVertical: 3, alignItems: 'center'}}>
-                        <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 10}}>❌ Cancel This Order</Text>
+                      <TouchableOpacity 
+                        onPress={() => handleCancelOrderAction(ord.id, ord.deliveryStatus, ord.payment)} 
+                        style={{backgroundColor: isCancelling ? '#b71c1c' : '#d32f2f', padding: 6, borderRadius: 5, marginVertical: 3, alignItems: 'center'}}
+                      >
+                        <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 10.5}}>
+                          {isCancelling ? '⚠️ Tap Again to Confirm Cancel' : 'Cancel This Order'}
+                        </Text>
                       </TouchableOpacity>
                     )}
-                    
-                    {ord.assignedBoy ? (
-                      <View style={{backgroundColor: '#f3e5f5', padding: 6, borderRadius: 5, marginVertical: 4}}>
-                        <Text style={{fontSize: 10, fontWeight: 'bold', color: '#6a1b9a'}}>🚴 Delivery Partner: {ord.assignedBoy}</Text>
-                        {boyPhone ? (
-                          <TouchableOpacity onPress={() => Linking.openURL(`tel:${boyPhone}`)} style={{marginTop: 3, alignSelf: 'flex-start', backgroundColor: '#6a1b9a', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 3}}>
-                            <Text style={{color: '#fff', fontSize: 9, fontWeight: 'bold'}}>📞 Call Delivery Boy</Text>
-                          </TouchableOpacity>
-                        ) : null}
-                      </View>
-                    ) : null}
 
                     <View style={s.itemsBox}>
                       <Text style={{fontSize: 9.5, fontWeight: 'bold', color: '#6a1b9a', marginBottom: 2}}>🛒 Purchased Items:</Text>
@@ -990,12 +991,12 @@ export default function CustomerApp() {
           <View style={s.card}>
             <Text style={s.secTitle}>⚙️ Customer Profile & Saved Addresses</Text>
             <Text style={s.lbl}>Your Name:</Text>
-            <TextInput style={s.i} value={custName} onChangeText={v => setCustName(sanitizeInput(v))} placeholder="Update Name" />
+            <TextInput style={s.i} value={custName} onChangeText={v => setCustName(sanitizeInput(v))} placeholder="Enter Full Name" />
             <Text style={s.lbl}>Mobile Number (Fixed):</Text>
             <TextInput style={[s.i, {backgroundColor: '#f5f5f5'}]} value={custPhone} editable={false} />
             
             <Text style={s.lbl}>Delivery Address:</Text>
-            <TextInput style={[s.i, {height: 55}]} value={custAddr} onChangeText={v => setCustAddr(sanitizeInput(v))} placeholder="House No, Street, Area" multiline={true} />
+            <TextInput style={[s.i, {height: 55}]} value={custAddr} onChangeText={v => setCustAddr(sanitizeInput(v))} placeholder="House No, Landmark, Area" multiline={true} />
             
             <TouchableOpacity style={{backgroundColor: '#7b1fa2', padding: 7, borderRadius: 5, alignItems: 'center', marginVertical: 3}} onPress={saveCurrentAddress}>
               <Text style={{color: '#fff', fontSize: 10.5, fontWeight: 'bold'}}>📍 Save This Address</Text>
@@ -1003,7 +1004,7 @@ export default function CustomerApp() {
 
             {savedAddresses.length > 0 && (
               <View style={{marginTop: 5}}>
-                <Text style={{fontSize: 10, fontWeight: 'bold', color: '#4a148c'}}>Saved Addresses (Tap to use):</Text>
+                <Text style={{fontSize: 10, fontWeight: 'bold', color: '#4a148c'}}>Saved Addresses (Tap to select):</Text>
                 {savedAddresses.map((ad, i) => (
                   <TouchableOpacity key={i} onPress={() => setCustAddr(ad)} style={{backgroundColor: '#f3e5f5', padding: 5, borderRadius: 4, marginVertical: 2}}>
                     <Text style={{fontSize: 9.5, color: '#333'}}>{ad}</Text>
@@ -1015,8 +1016,8 @@ export default function CustomerApp() {
             <TouchableOpacity style={[s.btn, {backgroundColor: '#6a1b9a', marginTop: 8, padding: 10}]} onPress={async () => {
               await AsyncStorage.setItem('manor_cust_name', custName);
               await AsyncStorage.setItem('manor_cust_addr', custAddr);
-              Alert.alert("Success", "Profile updated!");
-            }}><Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>💾 Save Changes</Text></TouchableOpacity>
+              Alert.alert("Success", "Profile updated successfully!");
+            }}><Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>💾 Save Profile</Text></TouchableOpacity>
 
             <View style={{marginTop: 15, backgroundColor: '#f3e5f5', padding: 10, borderRadius: 6}}>
               <Text style={{fontSize: 11, fontWeight: 'bold', color: '#4a148c', marginBottom: 4}}>📜 Legal & Store Policies:</Text>
@@ -1036,11 +1037,12 @@ export default function CustomerApp() {
         )}
       </ScrollView>
 
-      {subtotal > 0 && activeTab === 'shop' && inRange && storeSettings.storeOpen !== false && (
+      {/* ✅ Floating cart positioned 70px above bottom */}
+      {subtotal > 0 && activeTab === 'shop' && storeSettings.storeOpen !== false && (
         <View style={s.floatingCartBar}>
           <View style={{flex: 1, paddingRight: 6}}>
             <Text style={{color: '#fff', fontSize: 10.5, fontWeight: 'bold'}} numberOfLines={1}>{cartItemsList.reduce((sum, i) => sum + i.qty, 0)} Items | ₹{subtotal}</Text>
-            <Text style={{color: '#e1bee7', fontSize: 9}} numberOfLines={1}>Taxes included</Text>
+            <Text style={{color: '#e1bee7', fontSize: 9}} numberOfLines={1}>All taxes included</Text>
           </View>
           <TouchableOpacity onPress={() => setActiveTab('cart')} style={s.viewCartBtn}>
             <Text style={{color: '#6a1b9a', fontWeight: 'bold', fontSize: 11}} numberOfLines={1}>View Cart ➔</Text>
@@ -1053,7 +1055,7 @@ export default function CustomerApp() {
           <View style={s.hdr}>
             <Text style={s.ht}>🛒 Cart & Secure Checkout</Text>
             <TouchableOpacity onPress={() => setActiveTab('shop')} style={{backgroundColor: '#7b1fa2', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4}}>
-              <Text style={{color: '#fff', fontSize: 10, fontWeight: 'bold'}}>🔙 Return to Menu</Text>
+              <Text style={{color: '#fff', fontSize: 10, fontWeight: 'bold'}}>🔙 Back to Store</Text>
             </TouchableOpacity>
           </View>
           <ScrollView style={{padding: 10, width: '100%'}} contentContainerStyle={{paddingBottom: 35}}>
@@ -1090,7 +1092,7 @@ export default function CustomerApp() {
               <TextInput style={s.i} placeholder="Enter Full Name (Required)" value={custName} onChangeText={v => setCustName(v)} />
               <Text style={s.lbl}>Mobile Number:</Text>
               <TextInput style={[s.i, {backgroundColor: '#f5f5f5'}]} value={custPhone} editable={false} />
-              <Text style={s.lbl}>Delivery Address (Distance from store: {distanceKm} KM):</Text>
+              <Text style={s.lbl}>Delivery Address (Distance: {distanceKm} KM):</Text>
               <TextInput style={[s.i, {height: 55}]} placeholder="House No, Landmark, Area (Required)" multiline={true} value={custAddr} onChangeText={v => setCustAddr(v)} />
 
               {savedAddresses.length > 0 && (
@@ -1135,9 +1137,14 @@ export default function CustomerApp() {
                 </TouchableOpacity>
               </View>
 
-              <TouchableOpacity style={[s.btn, {marginTop: 12, backgroundColor: inRange ? '#6a1b9a' : '#c62828', padding: 10}]} onPress={placeOrder}>
+              <TouchableOpacity 
+                style={[s.btn, {marginTop: 12, backgroundColor: inRange ? '#6a1b9a' : '#c62828', padding: 10}]} 
+                onPress={placeOrder}
+              >
                 <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>
-                  {inRange ? (paymentMode === 'Online' ? `Pay ₹${finalTotal} via Razorpay & Place Order` : `Place COD Order (₹${finalTotal})`) : '🚫 Outside Delivery Zone - Cannot Order'}
+                  {inRange 
+                    ? (paymentMode === 'Online' ? `Pay ₹${finalTotal} via Razorpay & Place Order` : `Place COD Order (₹${finalTotal})`) 
+                    : `🚫 Outside Delivery Zone (${distanceKm} KM / Limit ${storeSettings.radiusKm} KM)`}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1162,30 +1169,23 @@ const s = StyleSheet.create({
   headerTabAct: { backgroundColor: '#ffd54f' },
   body: { padding: 4, width: '100%', flex: 1 },
   announcementBox: { backgroundColor: '#fbe9e7', padding: 8, borderRadius: 6, marginBottom: 6, borderWidth: 1, borderColor: '#ffccbc', width: '100%' },
-  
+  warningBox: { backgroundColor: '#ffebee', padding: 8, borderRadius: 6, marginBottom: 8, borderWidth: 1, borderColor: '#ef9a9a', width: '100%' },
   stickySearchContainer: { backgroundColor: '#4a148c', paddingHorizontal: 10, paddingBottom: 8, width: '100%', elevation: 4 },
   searchBar: { borderWidth: 1, borderColor: '#ce93d8', backgroundColor: '#fff', padding: 10, borderRadius: 12, fontSize: 12, width: '100%', elevation: 1 },
-
   bannerVerticalContainer: { width: '100%', marginBottom: 8, marginTop: 4 },
   bannerVerticalImg: { width: '100%', height: 135, borderRadius: 12, resizeMode: 'cover', marginBottom: 6, borderWidth: 1, borderColor: '#e1bee7' },
-
-  warningBox: { backgroundColor: '#ffebee', padding: 8, borderRadius: 6, marginBottom: 6, borderWidth: 1, borderColor: '#ef9a9a', width: '100%' },
-  
   catGridContainer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', width: '100%' },
   instamartCatCard: { width: '23.5%', backgroundColor: '#fff', padding: 6, borderRadius: 12, alignItems: 'center', marginBottom: 8, borderWidth: 1, borderColor: '#eee', elevation: 1 },
   instamartCatCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#f3e5f5', justifyContent: 'center', alignItems: 'center', marginBottom: 4, overflow: 'hidden' },
   catCircleImg: { width: '100%', height: '100%', borderRadius: 22, resizeMode: 'cover' },
-
   productsGridContainer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', paddingBottom: 15, width: '100%' },
   gridCard: { width: '48.5%', backgroundColor: '#fff', padding: 10, borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: '#e0e0e0', elevation: 2, alignItems: 'flex-start', minHeight: 200, justifyContent: 'space-between' },
   gridImg: { width: '100%', height: 110, borderRadius: 8, backgroundColor: '#f9f9f9', marginBottom: 6, resizeMode: 'contain' },
   gridAddBtn: { backgroundColor: '#6a1b9a', width: '100%', paddingVertical: 6, borderRadius: 6, alignItems: 'center', marginTop: 4 },
-  
   qtyCon: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 3, borderRadius: 6, marginTop: 4, justifyContent: 'space-between', width: '100%' },
   qtyConCart: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 4, borderRadius: 6, justifyContent: 'space-between' },
   qtyBtn: { backgroundColor: '#6a1b9a', width: 24, height: 24, borderRadius: 4, justifyContent: 'center', alignItems: 'center' },
-  
-  floatingCartBar: { position: 'absolute', bottom: 80, left: 10, right: 10, backgroundColor: '#4a148c', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', elevation: 8 },
+  floatingCartBar: { position: 'absolute', bottom: 70, left: 10, right: 10, backgroundColor: '#4a148c', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', elevation: 8 },
   viewCartBtn: { backgroundColor: '#ffd54f', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
   card: { backgroundColor: '#fff', padding: 10, borderRadius: 8, marginBottom: 8, borderWidth: 1, borderColor: '#d1c4e9', elevation: 2, width: '100%' },
   secTitle: { fontSize: 12, fontWeight: 'bold', color: '#4a148c', marginVertical: 4 },
@@ -1199,7 +1199,6 @@ const s = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 15, width: '100%' },
   modalCard: { width: '100%', maxWidth: 350, backgroundColor: '#fff', padding: 15, borderRadius: 14, elevation: 8 },
   modalTitle: { fontSize: 16, fontWeight: 'bold', color: '#4a148c' },
-
   policyHeader: { backgroundColor: '#4a148c', paddingHorizontal: 15, paddingVertical: 12, paddingTop: 45, width: '100%', elevation: 4 },
   policyBlock: { backgroundColor: '#f9f9f9', padding: 12, borderRadius: 8, marginBottom: 12, borderWidth: 1, borderColor: '#eeeeee' },
   policyBlockTitle: { fontSize: 12, fontWeight: 'bold', color: '#4a148c', marginBottom: 4 },
