@@ -1,7 +1,8 @@
 // --- MANOR MART ADVANCED INSTAMART-STYLE CUSTOMER APP ---
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, SafeAreaView, Modal, Image, Linking, Platform, BackHandler } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, SafeAreaView, Modal, Image, Platform, BackHandler } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Location from 'expo-location';
 
 const db = "https://manorbiryani-default-rtdb.firebaseio.com/";
 
@@ -14,8 +15,8 @@ export default function CustomerApp() {
     normCharge: '0',
     expCharge: '30',
     freeDel: '0',
-    hubLat: '19.7280',
-    hubLng: '72.9150',
+    hubLat: '19.6967',
+    hubLng: '72.7699',
     radiusKm: '10',
     adminNote: '',
     bgImage: '',
@@ -31,11 +32,11 @@ export default function CustomerApp() {
   const [cart, setCart] = useState({});
   const [activeTab, setActiveTab] = useState('shop');
 
-  const [termsAccepted, setTermsAccepted] = useState(false);
-  const termsDocLink = "https://docs.google.com/document/d/1Ifz2UIjAx1mfaaRiV0xisLihPXhCeiQkmebOfnBSUDA/edit?usp=drivesdk";
+  const [termsAccepted, setTermsAccepted] = useState(true);
+  const [showLegalModal, setShowLegalModal] = useState(false);
 
-  const [custLat, setCustLat] = useState(19.7280);
-  const [custLng, setCustLng] = useState(72.9150);
+  const [custLat, setCustLat] = useState(19.6967);
+  const [custLng, setCustLng] = useState(72.7699);
   const [distanceKm, setDistanceKm] = useState(0);
   const [inRange, setInRange] = useState(true);
 
@@ -55,6 +56,7 @@ export default function CustomerApp() {
   const [deleteStepOrder, setDeleteStepOrder] = useState(null);
 
   useEffect(() => {
+    checkInitialTermsAgreement();
     detectCustomerGPSAndLoadStore();
     checkSavedCustomerSession();
     checkURLPaymentReturn();
@@ -80,6 +82,49 @@ export default function CustomerApp() {
 
     return () => clearInterval(autoRefreshInterval);
   }, [custPhone, custLat, custLng]);
+
+  useEffect(() => {
+    const backAction = () => {
+      if (showLegalModal) {
+        setShowLegalModal(false);
+        return true;
+      }
+      if (activeTab === 'cart') {
+        setActiveTab('shop');
+        return true;
+      }
+      if (selectedCat || searchQuery) {
+        setSelectedCat('');
+        setSearchQuery('');
+        return true;
+      }
+      return false;
+    };
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
+    return () => backHandler.remove();
+  }, [showLegalModal, activeTab, selectedCat, searchQuery]);
+
+  const checkInitialTermsAgreement = async () => {
+    try {
+      const accepted = await AsyncStorage.getItem('manor_terms_accepted');
+      if (accepted === 'true') {
+        setTermsAccepted(true);
+      } else {
+        setTermsAccepted(false);
+      }
+    } catch (e) {
+      setTermsAccepted(true);
+    }
+  };
+
+  const handleAcceptTerms = async () => {
+    try {
+      await AsyncStorage.setItem('manor_terms_accepted', 'true');
+      setTermsAccepted(true);
+    } catch (e) {
+      setTermsAccepted(true);
+    }
+  };
 
   const checkURLPaymentReturn = async () => {
     try {
@@ -132,23 +177,41 @@ export default function CustomerApp() {
     } catch(e) {}
   };
 
-  const detectCustomerGPSAndLoadStore = () => {
-    if (typeof navigator !== 'undefined' && navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          let lat = pos.coords.latitude;
-          let lng = pos.coords.longitude;
-          setCustLat(lat);
-          setCustLng(lng);
-          loadStoreConfigAndLoadCatalog(lat, lng);
-        },
-        () => {
-          loadStoreConfigAndLoadCatalog(19.7280, 72.9150);
-        },
-        { enableHighAccuracy: true, timeout: 20000, maximumAge: 1000 }
-      );
-    } else {
-      loadStoreConfigAndLoadCatalog(19.7280, 72.9150);
+  const detectCustomerGPSAndLoadStore = async () => {
+    try {
+      if (Platform.OS === 'web') {
+        if (typeof navigator !== 'undefined' && navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              let lat = pos.coords.latitude;
+              let lng = pos.coords.longitude;
+              setCustLat(lat);
+              setCustLng(lng);
+              loadStoreConfigAndLoadCatalog(lat, lng);
+            },
+            () => loadStoreConfigAndLoadCatalog(19.6967, 72.7699),
+            { enableHighAccuracy: true, timeout: 20000, maximumAge: 1000 }
+          );
+        } else {
+          loadStoreConfigAndLoadCatalog(19.6967, 72.7699);
+        }
+      } else {
+        let { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert("Permission Required", "Please allow GPS location permission to verify your delivery zone.");
+          loadStoreConfigAndLoadCatalog(19.6967, 72.7699);
+          return;
+        }
+
+        let loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        let lat = loc.coords.latitude;
+        let lng = loc.coords.longitude;
+        setCustLat(lat);
+        setCustLng(lng);
+        loadStoreConfigAndLoadCatalog(lat, lng);
+      }
+    } catch (error) {
+      loadStoreConfigAndLoadCatalog(19.6967, 72.7699);
     }
   };
 
@@ -170,16 +233,39 @@ export default function CustomerApp() {
   };
 
   const calcGeoFence = (lat, lng, hLat, hLng, rad) => {
-    let hubLat = Number(hLat || storeSettings.hubLat || 19.7280);
-    let hubLng = Number(hLng || storeSettings.hubLng || 72.9150);
-    let allowedRadius = Number(rad || storeSettings.radiusKm || 10);
+    let customerLat = Number(lat);
+    let customerLng = Number(lng);
+    let hubLat = Number(hLat);
+    let hubLng = Number(hLng);
+    let allowedRadius = Number(rad);
+
+    if (isNaN(customerLat) || isNaN(customerLng)) {
+      customerLat = 19.6967;
+      customerLng = 72.7699;
+    }
+    if (isNaN(hubLat) || isNaN(hubLng) || hubLat === 0 || hubLng === 0) {
+      hubLat = 19.6967;
+      hubLng = 72.7699;
+    }
+    if (isNaN(allowedRadius) || allowedRadius <= 0) {
+      allowedRadius = 10;
+    }
 
     let R = 6371;
-    let dLat = (lat - hubLat) * (Math.PI / 180);
-    let dLon = (lng - hubLng) * (Math.PI / 180);
-    let a = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(hubLat*(Math.PI/180))*Math.cos(lat*(Math.PI/180))*Math.sin(dLon/2)*Math.sin(dLon/2);
-    let c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    let dLat = (customerLat - hubLat) * (Math.PI / 180);
+    let dLon = (customerLng - hubLng) * (Math.PI / 180);
+    let a = 
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) + 
+      Math.cos(hubLat * (Math.PI / 180)) * Math.cos(customerLat * (Math.PI / 180)) * 
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    let c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     let d = R * c;
+
+    if (isNaN(d)) {
+      setDistanceKm(0);
+      setInRange(true);
+      return;
+    }
 
     let distRounded = Number(d.toFixed(2));
     setDistanceKm(distRounded);
@@ -286,7 +372,7 @@ export default function CustomerApp() {
         body: JSON.stringify({ deliveryStatus: '❌ Order Cancelled' })
       }).then(() => {
         fetchCustomerOrders(custPhone);
-        Alert.alert("Cancelled", "Your order has been cancelled successfully.");
+        Alert.alert("Cancelled", "Your order has been cancelled. Online payment will be refunded within 5 to 7 business days per store policy.");
       }).catch(() => {
         Alert.alert("Error", "Failed to cancel order. Try again.");
       });
@@ -342,43 +428,55 @@ export default function CustomerApp() {
 
   const placeOrder = async () => {
     if (storeSettings.storeOpen === false) {
-      return Alert.alert("Store Closed", "Sorry! The store is currently closed. You cannot place orders right now[span_1](start_span)[span_1](end_span).");
+      return Alert.alert("Store Closed", "Sorry! The store is currently closed. You cannot place orders right now.");
     }
 
     let cleanName = sanitizeInput(custName);
     let cleanAddr = sanitizeInput(custAddr);
 
     if (!cleanName || cleanName.trim() === '') {
-      return Alert.alert("⚠️ Name Required", "Please enter your Full Name in delivery details[span_2](start_span)[span_2](end_span)!");
+      return Alert.alert("⚠️ Name Required", "Please enter your Full Name in delivery details!");
     }
     if (!cleanAddr || cleanAddr.trim() === '') {
-      return Alert.alert("⚠️ Address Required", "Please enter your Delivery Address[span_3](start_span)[span_3](end_span)!");
+      return Alert.alert("⚠️ Address Required", "Please enter your Delivery Address!");
     }
     if (!custPhone || custPhone.length !== 10) {
-      return Alert.alert("⚠️ Phone Error", "Valid 10-digit mobile number required[span_4](start_span)[span_4](end_span).");
+      return Alert.alert("⚠️ Phone Error", "Valid 10-digit mobile number required.");
     }
 
-    // STRICT GEOFENCE CHECK FOR ALL ORDERS
     if (!inRange) {
       return Alert.alert(
         "🚫 Outside Delivery Zone", 
-        `Sorry! Store delivers only within ${storeSettings.radiusKm} KM. Your location is ${distanceKm} KM away, which is out of our delivery zone[span_5](start_span)[span_5](end_span).`
+        `Sorry! Store delivers only within ${storeSettings.radiusKm} KM. Your location is ${distanceKm} KM away, which is out of our delivery zone.`
       );
     }
 
     let minOrd = Number(storeSettings.minOrd || 0);
     if (minOrd > 0 && subtotal < minOrd) {
-      return Alert.alert("⚠️ Minimum Order Notice", `Store minimum order is ₹${minOrd}. Your subtotal is ₹${subtotal}[span_6](start_span)[span_6](end_span).`);
+      return Alert.alert("⚠️ Minimum Order Notice", `Store minimum order is ₹${minOrd}. Your subtotal is ₹${subtotal}.`);
     }
 
     let orderId = 'ord_' + Date.now();
     let initialStatus = paymentMode === 'Online' ? '⏳ Payment Pending' : 'Order Successful';
 
     let orderObj = {
-      id: orderId, name: cleanName, phone: custPhone, addr: cleanAddr,
-      lat: custLat, lng: custLng, distance: distanceKm, items: cart,
-      subtotal, deliveryFee, total: finalTotal, deliveryType, deliveryShift,
-      payment: paymentMode, deliveryStatus: initialStatus, assignedBoy: '', timestamp: Date.now()
+      id: orderId, 
+      name: cleanName, 
+      phone: custPhone, 
+      addr: cleanAddr,
+      lat: custLat, 
+      lng: custLng, 
+      distance: distanceKm, 
+      items: cart,
+      subtotal, 
+      deliveryFee, 
+      total: finalTotal, 
+      deliveryType, 
+      deliveryShift,
+      payment: paymentMode, 
+      deliveryStatus: initialStatus, 
+      assignedBoy: '', 
+      timestamp: Date.now()
     };
 
     fetch(db + `orders/${orderId}.json`, {
@@ -402,16 +500,16 @@ export default function CustomerApp() {
             await Linking.openURL(targetUrl);
           } else {
             if (Platform.OS === 'web') window.location.href = targetUrl;
-            else Alert.alert("Error", "Cannot open payment link[span_7](start_span)[span_7](end_span).");
+            else Alert.alert("Error", "Cannot open payment link.");
           }
         } catch (e) {
           if (Platform.OS === 'web') window.location.href = targetUrl;
         }
       } else {
-        Alert.alert("🎉 Success", `Order #${orderId.slice(-6)} placed successfully[span_8](start_span)[span_8](end_span)!`);
+        Alert.alert("🎉 Success", `Order #${orderId.slice(-6)} placed successfully!`);
       }
     }).catch(err => {
-      Alert.alert("Error", "Failed to place order. Please try again[span_9](start_span)[span_9](end_span).");
+      Alert.alert("Error", "Failed to place order. Please try again.");
     });
   };
 
@@ -446,22 +544,95 @@ export default function CustomerApp() {
     );
   };
 
+  const renderTermsModal = () => (
+    <Modal visible={!termsAccepted} transparent={true} animationType="slide">
+      <View style={s.modalOverlay}>
+        <View style={s.modalCard}>
+          <Text style={{fontSize: 28, marginBottom: 4, textAlign: 'center'}}>📜✨</Text>
+          <Text style={[s.modalTitle, {textAlign: 'center'}]}>Welcome to {storeSettings.store}</Text>
+          <Text style={{fontSize: 11, color: '#444', textAlign: 'center', marginVertical: 8}}>
+            Please review our Terms & Conditions, Privacy, and 5-7 Days Refund Policy before continuing.
+          </Text>
+          
+          <TouchableOpacity onPress={() => setShowLegalModal(true)} style={{marginBottom: 12, alignSelf: 'center'}}>
+            <Text style={{fontSize: 11.5, color: '#6a1b9a', fontWeight: 'bold', textDecorationLine: 'underline'}}>
+              📄 Read Complete Terms & Refund Policies
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity onPress={handleAcceptTerms} style={s.btn}>
+            <Text style={s.btnTxt}>✨ I Agree & Start Shopping</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  const renderInAppLegalModal = () => (
+    <Modal visible={showLegalModal} animationType="slide" transparent={false}>
+      <SafeAreaView style={{flex: 1, backgroundColor: '#ffffff'}}>
+        <View style={s.policyHeader}>
+          <Text style={{color: '#fff', fontSize: 14, fontWeight: 'bold'}}>📜 Store Legal Policies & Terms</Text>
+        </View>
+
+        <ScrollView style={{flex: 1, padding: 16}} contentContainerStyle={{paddingBottom: 150}}>
+          <Text style={{fontSize: 15, fontWeight: 'bold', color: '#4a148c', marginBottom: 2}}>MANOR MART</Text>
+          <Text style={{fontSize: 10, color: '#666', marginBottom: 14}}>Terms & Conditions, Privacy & Refund Policy (Last Updated: September 2026)</Text>
+
+          <View style={s.policyBlock}>
+            <Text style={s.policyBlockTitle}>1. About Our Service & Coverage</Text>
+            <Text style={s.policyText}>• Manor Mart is a hyper-local quick-commerce grocery ordering and delivery platform serving Manor, Palghar, Maharashtra.</Text>
+            <Text style={s.policyText}>• Deliveries operate strictly within designated geo-fenced boundaries set by the store admin.</Text>
+          </View>
+
+          <View style={s.policyBlock}>
+            <Text style={s.policyBlockTitle}>2. Account & Eligibility</Text>
+            <Text style={s.policyText}>• Customers must provide an active, valid 10-digit Indian mobile number to log in and use our service.</Text>
+            <Text style={s.policyText}>• Customers are responsible for providing complete and accurate recipient details and delivery addresses.</Text>
+          </View>
+
+          <View style={s.policyBlock}>
+            <Text style={s.policyBlockTitle}>3. Pricing & Orders</Text>
+            <Text style={s.policyText}>• All prices listed on the application are in Indian Rupees (INR) and include applicable taxes.</Text>
+            <Text style={s.policyText}>• Delivery fees (Normal or Express) and free-delivery eligibility are calculated transparently at checkout.</Text>
+          </View>
+
+          <View style={s.policyBlock}>
+            <Text style={s.policyBlockTitle}>4. Cancellation & Refund Policy (5 to 7 Days)</Text>
+            <Text style={s.policyText}>• Customers can cancel orders directly through the app before dispatch ("Out for Delivery").</Text>
+            <Text style={s.policyText}>• In case of cancellation before dispatch or spoiled/damaged items, refunds for prepaid online payments (Razorpay, UPI, Cards) are credited back to the original source payment account within 5 to 7 business days.</Text>
+            <Text style={s.policyText}>• For Cash on Delivery (COD) orders, billing invoices are adjusted immediately on the spot.</Text>
+          </View>
+
+          <View style={s.policyBlock}>
+            <Text style={s.policyBlockTitle}>5. Privacy & User Data Protection</Text>
+            <Text style={s.policyText}>• We collect phone number, name, delivery address, and GPS coordinates solely for delivery routing and geofencing verification.</Text>
+            <Text style={s.policyText}>• We never sell, rent, or trade your personal information to third parties.</Text>
+            <Text style={s.policyText}>• Users can clear their profile details or delete their account directly within the Profile section.</Text>
+          </View>
+
+          <View style={s.policyBlock}>
+            <Text style={s.policyBlockTitle}>6. Grievance & Official Support</Text>
+            <Text style={s.policyText}>• Business Name: Manor Mart</Text>
+            <Text style={s.policyText}>• Operational Region: Manor, Palghar, Maharashtra - 401403</Text>
+            <Text style={s.policyText}>• Official Support Email: shabaj9769@gmail.com</Text>
+          </View>
+        </ScrollView>
+
+        <View style={s.policyBottomBar}>
+          <TouchableOpacity onPress={() => setShowLegalModal(false)} style={s.policyCloseBtn}>
+            <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 13}}>✓ Close & Return to App</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    </Modal>
+  );
+
   if (!isLoggedIn) {
     return (
       <SafeAreaView style={s.loginCon}>
-        <Modal visible={!termsAccepted} transparent={true} animationType="slide">
-          <View style={s.modalOverlay}>
-            <View style={s.modalCard}>
-              <Text style={{fontSize: 28, marginBottom: 4, textAlign: 'center'}}>📜✨</Text>
-              <Text style={[s.modalTitle, {textAlign: 'center'}]}>Welcome to {storeSettings.store}</Text>
-              <Text style={{fontSize: 11, color: '#444', textAlign: 'center', marginVertical: 8}}>Please review store terms & conditions before entering.</Text>
-              <TouchableOpacity onPress={() => Linking.openURL(termsDocLink)} style={{marginBottom: 12, alignSelf: 'center'}}>
-                <Text style={{fontSize: 11.5, color: '#d81b60', fontWeight: 'bold', textDecorationLine: 'underline'}}>📄 Read Official Terms & Conditions</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => setTermsAccepted(true)} style={s.btn}><Text style={s.btnTxt}>✨ I Agree & Start Shopping</Text></TouchableOpacity>
-            </View>
-          </View>
-        </Modal>
+        {renderTermsModal()}
+        {renderInAppLegalModal()}
 
         <View style={{flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20, width: '100%'}}>
           <View style={s.loginCard}>
@@ -470,6 +641,10 @@ export default function CustomerApp() {
             <Text style={{fontSize: 11, color: '#666', textAlign: 'center', marginBottom: 15}}>Enter 10-digit mobile number to enter store:</Text>
             <TextInput style={s.lockInput} placeholder="10-digit Phone" keyboardType="numeric" maxLength={10} value={loginPhoneInput} onChangeText={setLoginPhoneInput} />
             <TouchableOpacity style={s.lockBtn} onPress={handleLogin}><Text style={s.lockBtnTxt}>🚀 Enter Store Now</Text></TouchableOpacity>
+            
+            <TouchableOpacity onPress={() => setShowLegalModal(true)} style={{marginTop: 12, alignSelf: 'center'}}>
+              <Text style={{fontSize: 10, color: '#6a1b9a', textDecorationLine: 'underline'}}>Terms, Privacy & Refund Policy</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </SafeAreaView>
@@ -501,19 +676,8 @@ export default function CustomerApp() {
 
   return (
     <SafeAreaView style={s.con}>
-      <Modal visible={!termsAccepted} transparent={true} animationType="slide">
-        <View style={s.modalOverlay}>
-          <View style={s.modalCard}>
-            <Text style={{fontSize: 28, marginBottom: 4, textAlign: 'center'}}>📜✨</Text>
-            <Text style={[s.modalTitle, {textAlign: 'center'}]}>Welcome to {storeSettings.store}</Text>
-            <Text style={{fontSize: 11, color: '#444', textAlign: 'center', marginVertical: 8}}>Please review store terms & conditions before entering.</Text>
-            <TouchableOpacity onPress={() => Linking.openURL(termsDocLink)} style={{marginBottom: 12, alignSelf: 'center'}}>
-              <Text style={{fontSize: 11.5, color: '#d81b60', fontWeight: 'bold', textDecorationLine: 'underline'}}>📄 Read Official Terms & Conditions</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setTermsAccepted(true)} style={s.btn}><Text style={s.btnTxt}>✨ I Agree & Start Shopping</Text></TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      {renderTermsModal()}
+      {renderInAppLegalModal()}
 
       <View style={s.hdr}>
         <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%', marginBottom: 6}}>
@@ -589,14 +753,25 @@ export default function CustomerApp() {
               <View style={{width: '100%', marginBottom: 12, marginTop: 4}}>
                 <Text style={{fontSize: 13, fontWeight: 'bold', color: '#222', marginBottom: 8}}>📂 Grocery & Kitchen Categories</Text>
                 <View style={s.catGridContainer}>
-                  {Object.keys(categories).map((catName, idx) => (
-                    <TouchableOpacity key={idx} onPress={() => setSelectedCat(catName)} style={s.instamartCatCard}>
-                      <View style={s.instamartCatCircle}>
-                        <Text style={{fontSize: 22}}>🧺</Text>
-                      </View>
-                      <Text style={{fontSize: 10, fontWeight: 'bold', color: '#333', textAlign: 'center', marginTop: 4}} numberOfLines={2}>{catName}</Text>
-                    </TouchableOpacity>
-                  ))}
+                  {Object.keys(categories).map((catName, idx) => {
+                    const catObj = categories[catName];
+                    const catImgUrl = catObj?.image && typeof catObj.image === 'string' && catObj.image.trim().startsWith('http') 
+                      ? catObj.image.trim() 
+                      : null;
+
+                    return (
+                      <TouchableOpacity key={idx} onPress={() => setSelectedCat(catName)} style={s.instamartCatCard}>
+                        <View style={s.instamartCatCircle}>
+                          {catImgUrl ? (
+                            <Image source={{ uri: catImgUrl }} style={s.catCircleImg} />
+                          ) : (
+                            <Text style={{fontSize: 22}}>🛍️</Text>
+                          )}
+                        </View>
+                        <Text style={{fontSize: 10, fontWeight: 'bold', color: '#333', textAlign: 'center', marginTop: 4}} numberOfLines={2}>{catName}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
               </View>
             ) : null}
@@ -773,6 +948,15 @@ export default function CustomerApp() {
               Alert.alert("Success", "Profile updated!");
             }}><Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>💾 Save Changes</Text></TouchableOpacity>
 
+            <View style={{marginTop: 15, backgroundColor: '#f3e5f5', padding: 10, borderRadius: 6}}>
+              <Text style={{fontSize: 11, fontWeight: 'bold', color: '#4a148c', marginBottom: 4}}>📜 Legal & Store Policies:</Text>
+              <TouchableOpacity onPress={() => setShowLegalModal(true)} style={{paddingVertical: 4}}>
+                <Text style={{fontSize: 10.5, color: '#6a1b9a', textDecorationLine: 'underline', fontWeight: 'bold'}}>
+                  • View Terms, Privacy & Refund Policy (5-7 Days)
+                </Text>
+              </TouchableOpacity>
+            </View>
+
             <View style={{marginTop: 15, borderTopWidth: 1, borderColor: '#eee', paddingTop: 8}}>
               <TouchableOpacity style={[s.btn, {backgroundColor: '#e65100', marginBottom: 6, padding: 10}]} onPress={handleLogout}><Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>🚪 Logout</Text></TouchableOpacity>
               <TouchableOpacity style={[s.btn, {backgroundColor: '#d32f2f', marginBottom: 6, padding: 10}]} onPress={handleExitApp}><Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>🔴 Exit Application</Text></TouchableOpacity>
@@ -882,7 +1066,9 @@ export default function CustomerApp() {
               </View>
 
               <TouchableOpacity style={[s.btn, {marginTop: 12, backgroundColor: inRange ? '#6a1b9a' : '#c62828', padding: 10}]} onPress={placeOrder}>
-                <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>{inRange ? (paymentMode === 'Online' ? `Pay ₹{finalTotal} via Razorpay & Place Order` : `Place COD Order (₹{finalTotal})`) : '🚫 Outside Delivery Zone - Cannot Order'}</Text>
+                <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>
+                  {inRange ? (paymentMode === 'Online' ? `Pay ₹${finalTotal} via Razorpay & Place Order` : `Place COD Order (₹${finalTotal})`) : '🚫 Outside Delivery Zone - Cannot Order'}
+                </Text>
               </TouchableOpacity>
             </View>
           </ScrollView>
@@ -917,7 +1103,8 @@ const s = StyleSheet.create({
   
   catGridContainer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', width: '100%' },
   instamartCatCard: { width: '23.5%', backgroundColor: '#fff', padding: 6, borderRadius: 12, alignItems: 'center', marginBottom: 8, borderWidth: 1, borderColor: '#eee', elevation: 1 },
-  instamartCatCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#f3e5f5', justifyContent: 'center', alignItems: 'center', marginBottom: 4 },
+  instamartCatCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#f3e5f5', justifyContent: 'center', alignItems: 'center', marginBottom: 4, overflow: 'hidden' },
+  catCircleImg: { width: '100%', height: '100%', borderRadius: 22, resizeMode: 'cover' },
 
   productsGridContainer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', paddingBottom: 15, width: '100%' },
   gridCard: { width: '48.5%', backgroundColor: '#fff', padding: 10, borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: '#e0e0e0', elevation: 2, alignItems: 'flex-start', minHeight: 200, justifyContent: 'space-between' },
@@ -940,5 +1127,13 @@ const s = StyleSheet.create({
   catChip: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, backgroundColor: '#f3e5f5', marginRight: 5, marginBottom: 5, borderWidth: 1, borderColor: '#ce93d8' },
   catChipAct: { backgroundColor: '#6a1b9a', borderColor: '#6a1b9a' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 15, width: '100%' },
-  modalCard: { width: '100%', maxWidth: 350, backgroundColor: '#fff', padding: 15, borderRadius: 14, elevation: 8 }
+  modalCard: { width: '100%', maxWidth: 350, backgroundColor: '#fff', padding: 15, borderRadius: 14, elevation: 8 },
+  modalTitle: { fontSize: 16, fontWeight: 'bold', color: '#4a148c' },
+
+  policyHeader: { backgroundColor: '#4a148c', paddingHorizontal: 15, paddingVertical: 12, paddingTop: 45, width: '100%', elevation: 4 },
+  policyBlock: { backgroundColor: '#f9f9f9', padding: 12, borderRadius: 8, marginBottom: 12, borderWidth: 1, borderColor: '#eeeeee' },
+  policyBlockTitle: { fontSize: 12, fontWeight: 'bold', color: '#4a148c', marginBottom: 4 },
+  policyText: { fontSize: 11, color: '#333', lineHeight: 16, marginBottom: 3 },
+  policyBottomBar: { position: 'absolute', bottom: 60, left: 15, right: 15, zIndex: 999 },
+  policyCloseBtn: { backgroundColor: '#6a1b9a', paddingVertical: 12, borderRadius: 10, alignItems: 'center', elevation: 6 }
 });
