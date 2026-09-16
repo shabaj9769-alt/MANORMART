@@ -1,8 +1,9 @@
 // --- MANOR MART ADVANCED INSTAMART-STYLE CUSTOMER APP ---
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, SafeAreaView, Modal, Image, Platform, BackHandler } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, SafeAreaView, Modal, Image, Platform, BackHandler, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
+import * as ExpoLinking from 'expo-linking';
 
 const db = "https://manorbiryani-default-rtdb.firebaseio.com/";
 
@@ -61,6 +62,31 @@ export default function CustomerApp() {
     checkSavedCustomerSession();
     checkURLPaymentReturn();
 
+    const handleDeepLink = async (event) => {
+      try {
+        let data = ExpoLinking.parse(event.url);
+        if (data.queryParams?.razorpay_payment_id || data.queryParams?.status === 'success' || (event.url && event.url.includes('success'))) {
+          let pendingOrderId = await AsyncStorage.getItem('manor_pending_ord');
+          if (pendingOrderId) {
+            await verifyAndConfirmOrder(pendingOrderId);
+          }
+        }
+      } catch (e) {}
+    };
+
+    const sub = ExpoLinking.addEventListener('url', handleDeepLink);
+
+    ExpoLinking.getInitialURL().then(async (url) => {
+      try {
+        if (url && (url.includes('success') || url.includes('razorpay_payment_id'))) {
+          let pendingOrderId = await AsyncStorage.getItem('manor_pending_ord');
+          if (pendingOrderId) {
+            await verifyAndConfirmOrder(pendingOrderId);
+          }
+        }
+      } catch (e) {}
+    });
+
     const autoRefreshInterval = setInterval(() => {
       fetch(db + ".json").then(r => r.json()).then(data => {
         if (!data) return;
@@ -80,7 +106,10 @@ export default function CustomerApp() {
       }
     }, 5000);
 
-    return () => clearInterval(autoRefreshInterval);
+    return () => {
+      clearInterval(autoRefreshInterval);
+      sub.remove();
+    };
   }, [custPhone, custLat, custLng]);
 
   useEffect(() => {
@@ -107,11 +136,7 @@ export default function CustomerApp() {
   const checkInitialTermsAgreement = async () => {
     try {
       const accepted = await AsyncStorage.getItem('manor_terms_accepted');
-      if (accepted === 'true') {
-        setTermsAccepted(true);
-      } else {
-        setTermsAccepted(false);
-      }
+      setTermsAccepted(accepted === 'true');
     } catch (e) {
       setTermsAccepted(true);
     }
@@ -198,7 +223,6 @@ export default function CustomerApp() {
       } else {
         let { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') {
-          Alert.alert("Permission Required", "Please allow GPS location permission to verify your delivery zone.");
           loadStoreConfigAndLoadCatalog(19.6967, 72.7699);
           return;
         }
@@ -274,26 +298,42 @@ export default function CustomerApp() {
 
   const sanitizeInput = (str) => (str || '').replace(/[.#$[\]/]/g, '').trim();
 
+  // Safe Cart Quantity Updater to prevent crashes
   const updateCartQty = (prod, delta) => {
+    if (!prod || !prod.id) return;
     if (prod.inStock === false) {
       return Alert.alert("Out of Stock", "Sorry! This item is currently sold out.");
     }
     let pKey = prod.id;
-    let curr = cart[pKey]?.qty || 0;
-    let next = curr + delta;
+    let priceVal = Number(prod.price || 0);
+    let discVal = Number(prod.discount || 0);
+    let eff = priceVal - discVal;
+
     setCart(prev => {
-      let up = { ...prev };
-      if (next <= 0) delete up[pKey];
-      else {
-        let eff = Number(prod.price) - Number(prod.discount || 0);
-        up[pKey] = { ...prod, effectivePrice: eff, qty: next };
+      let up = { ...(prev || {}) };
+      let curr = up[pKey]?.qty || 0;
+      let next = curr + delta;
+      
+      if (next <= 0) {
+        delete up[pKey];
+      } else {
+        up[pKey] = { 
+          id: prod.id,
+          name: prod.name || 'Item',
+          unit: prod.unit || '',
+          price: priceVal,
+          discount: discVal,
+          effectivePrice: eff,
+          qty: next,
+          image: prod.image || ''
+        };
       }
       return up;
     });
   };
 
-  let cartItemsList = Object.values(cart);
-  let subtotal = cartItemsList.reduce((sum, i) => sum + (i.effectivePrice * i.qty), 0);
+  let cartItemsList = Object.values(cart || {});
+  let subtotal = cartItemsList.reduce((sum, i) => sum + (Number(i.effectivePrice || 0) * Number(i.qty || 0)), 0);
 
   let deliveryFee = 0;
   let freeThreshold = Number(storeSettings.freeDel || 0);
@@ -350,29 +390,38 @@ export default function CustomerApp() {
     );
   };
 
-  const handleDeleteAccount = () => {
-    Alert.alert(
-      "Delete Account",
-      "Are you sure you want to delete your account and clear data?",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Delete", onPress: handleLogout, style: "destructive" }
-      ]
-    );
-  };
-
-  const cancelOrder = (orderId, currentStatus) => {
+  const cancelOrder = (orderId, currentStatus, paymentModeVal) => {
     if (currentStatus === 'Delivered' || currentStatus === 'Out for Delivery') {
       return Alert.alert("Cannot Cancel", "Order is already out for delivery or delivered.");
     }
     
     const executeCancel = () => {
+      let newCancelStatus = '❌ Order Cancelled';
+      let needsRefund = false;
+
+      if (paymentModeVal === 'Online') {
+        if (currentStatus && currentStatus.includes('Payment Pending')) {
+          newCancelStatus = '❌ Cancelled (Unpaid)';
+          needsRefund = false;
+        } else {
+          newCancelStatus = '❌ Cancelled (Paid - Refundable)';
+          needsRefund = true;
+        }
+      } else {
+        newCancelStatus = '❌ Order Cancelled (COD)';
+        needsRefund = false;
+      }
+
       fetch(db + `orders/${orderId}.json`, {
         method: 'PATCH',
-        body: JSON.stringify({ deliveryStatus: '❌ Order Cancelled' })
+        body: JSON.stringify({ deliveryStatus: newCancelStatus })
       }).then(() => {
         fetchCustomerOrders(custPhone);
-        Alert.alert("Cancelled", "Your order has been cancelled. Online payment will be refunded within 5 to 7 business days per store policy.");
+        if (needsRefund) {
+          Alert.alert("Cancelled", "Your order has been cancelled. Online payment will be refunded within 5 to 7 business days per store policy.");
+        } else {
+          Alert.alert("Cancelled", "Your order has been cancelled successfully. No payment was charged.");
+        }
       }).catch(() => {
         Alert.alert("Error", "Failed to cancel order. Try again.");
       });
@@ -456,7 +505,7 @@ export default function CustomerApp() {
       return Alert.alert("⚠️ Minimum Order Notice", `Store minimum order is ₹${minOrd}. Your subtotal is ₹${subtotal}.`);
     }
 
-    let orderId = 'ord_' + Date.now();
+    let orderId = 'ord_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
     let initialStatus = paymentMode === 'Online' ? '⏳ Payment Pending' : 'Order Successful';
 
     let orderObj = {
@@ -494,35 +543,51 @@ export default function CustomerApp() {
           : 'https://shabaj9769-alt.github.io/manormart-pay/';
         let targetUrl = `${customBaseUrl}?amount=${finalTotal}&order_id=${orderId}`;
         
-        try {
-          let supported = await Linking.canOpenURL(targetUrl);
-          if (supported) {
-            await Linking.openURL(targetUrl);
-          } else {
-            if (Platform.OS === 'web') window.location.href = targetUrl;
-            else Alert.alert("Error", "Cannot open payment link.");
-          }
-        } catch (e) {
-          if (Platform.OS === 'web') window.location.href = targetUrl;
+        if (Platform.OS === 'web') {
+          window.location.href = targetUrl;
+        } else {
+          Linking.openURL(targetUrl).catch(() => {
+            Alert.alert("Browser Error", "Payment link open nahi ho paya. Kripya phone ka browser check karein.");
+          });
         }
       } else {
         Alert.alert("🎉 Success", `Order #${orderId.slice(-6)} placed successfully!`);
       }
     }).catch(err => {
-      Alert.alert("Error", "Failed to place order. Please try again.");
+      Alert.alert("Error", "Failed to place order: " + (err.message || "Check network"));
     });
   };
 
-  const renderTimelineTracker = (status) => {
+  const renderTimelineTracker = (status, orderId) => {
     let steps = ['Order Successful', 'Assigned', 'Out for Delivery', 'Delivered'];
     let currentStepIdx = 0;
     if (status === 'Assigned') currentStepIdx = 1;
     else if (status === 'Out for Delivery') currentStepIdx = 2;
     else if (status === 'Delivered') currentStepIdx = 3;
-    else if (status && status.includes('Payment Pending')) currentStepIdx = -1;
-    else if (status && status.includes('Cancelled')) return <Text style={{fontSize: 10, color: '#c62828', fontWeight: 'bold'}}>❌ Order Cancelled</Text>;
-
-    if (currentStepIdx === -1) return <Text style={{fontSize: 10, color: '#e65100', fontWeight: 'bold'}}>⏳ Awaiting Payment Completion</Text>;
+    else if (status && status.includes('Payment Pending')) {
+      return (
+        <View style={{marginVertical: 6, backgroundColor: '#fff3e0', padding: 8, borderRadius: 6, borderWidth: 1, borderColor: '#ffb74d', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'}}>
+          <View>
+            <Text style={{fontSize: 11, color: '#e65100', fontWeight: 'bold'}}>⏳ Awaiting Payment Completion</Text>
+            <Text style={{fontSize: 9.5, color: '#666', marginTop: 2}}>Agar payment ho gaya hai, toh check karein:</Text>
+          </View>
+          <TouchableOpacity onPress={() => {
+            fetch(db + `orders/${orderId}.json`).then(r => r.json()).then(ord => {
+              if (ord && ord.deliveryStatus === 'Order Successful') {
+                Alert.alert("Verified!", "Payment verified and order confirmed!");
+                fetchCustomerOrders(custPhone);
+              } else {
+                Alert.alert("Pending", "Payment abhi confirm nahi hui hai ya app band ho gayi thi. Dobara try karein.");
+              }
+            });
+          }} style={{backgroundColor: '#e65100', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 5}}>
+            <Text style={{color: '#fff', fontSize: 10, fontWeight: 'bold'}}>🔄 Check Status</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    } else if (status && status.includes('Cancelled')) {
+      return <Text style={{fontSize: 10, color: status.includes('Unpaid') ? '#757575' : '#c62828', fontWeight: 'bold'}}>{status}</Text>;
+    }
 
     return (
       <View style={{marginVertical: 6, backgroundColor: '#f3e5f5', padding: 6, borderRadius: 6}}>
@@ -655,21 +720,21 @@ export default function CustomerApp() {
   let bannerList = [storeSettings.b1, storeSettings.b2, storeSettings.b3].filter(b => b && b.trim().startsWith('http'));
 
   if (searchQuery) {
-    Object.keys(categories).forEach(cat => {
+    Object.keys(categories || {}).forEach(cat => {
       Object.keys(categories[cat] || {}).forEach(pKey => {
         if (pKey !== 'status' && pKey !== 'image' && pKey !== 'discountPercent') {
           let pr = categories[cat][pKey];
           if (pr?.name && pr.name.toLowerCase().includes(searchQuery.toLowerCase())) {
-            itemsToDisplay.push({ ...pr, catName: cat });
+            itemsToDisplay.push({ ...pr, id: pKey, catName: cat });
           }
         }
       });
     });
   } else if (selectedCat && categories[selectedCat]) {
-    Object.keys(categories[selectedCat]).forEach(pKey => {
+    Object.keys(categories[selectedCat] || {}).forEach(pKey => {
       if (pKey !== 'status' && pKey !== 'image' && pKey !== 'discountPercent') {
         let pr = categories[selectedCat][pKey];
-        if (pr?.name) itemsToDisplay.push({ ...pr, catName: selectedCat });
+        if (pr?.name) itemsToDisplay.push({ ...pr, id: pKey, catName: selectedCat });
       }
     });
   }
@@ -753,7 +818,7 @@ export default function CustomerApp() {
               <View style={{width: '100%', marginBottom: 12, marginTop: 4}}>
                 <Text style={{fontSize: 13, fontWeight: 'bold', color: '#222', marginBottom: 8}}>📂 Grocery & Kitchen Categories</Text>
                 <View style={s.catGridContainer}>
-                  {Object.keys(categories).map((catName, idx) => {
+                  {Object.keys(categories || {}).map((catName, idx) => {
                     const catObj = categories[catName];
                     const catImgUrl = catObj?.image && typeof catObj.image === 'string' && catObj.image.trim().startsWith('http') 
                       ? catObj.image.trim() 
@@ -799,7 +864,7 @@ export default function CustomerApp() {
                   ) : (
                     <View style={s.productsGridContainer}>
                       {itemsToDisplay.map((pr, idx) => {
-                        let effPrice = Number(pr.price) - Number(pr.discount || 0);
+                        let effPrice = Number(pr.price || 0) - Number(pr.discount || 0);
                         let cartQty = cart[pr.id]?.qty || 0;
                         let isSoldOut = pr.inStock === false;
 
@@ -808,7 +873,7 @@ export default function CustomerApp() {
                             key={idx} 
                             style={[s.gridCard, isSoldOut && {backgroundColor: '#f5f5f5'}]}
                           >
-                            {pr.image && pr.image.trim().startsWith('http') ? (
+                            {pr.image && typeof pr.image === 'string' && pr.image.trim().startsWith('http') ? (
                               <Image source={{ uri: pr.image.trim() }} style={s.gridImg} />
                             ) : (
                               <View style={[s.gridImg, {justifyContent:'center', alignItems:'center', backgroundColor:'#f3e5f5'}]}>
@@ -817,8 +882,8 @@ export default function CustomerApp() {
                             )}
                             
                             <View style={{flex: 1, justifyContent: 'space-between', width: '100%', marginTop: 4}}>
-                              <Text style={{fontWeight: 'bold', fontSize: 12, color: '#222'}} numberOfLines={2}>{pr.name}</Text>
-                              <Text style={{fontSize: 10, color: '#666', marginVertical: 2}}>{pr.unit}</Text>
+                              <Text style={{fontWeight: 'bold', fontSize: 12, color: '#222'}} numberOfLines={2}>{pr.name || 'Product'}</Text>
+                              <Text style={{fontSize: 10, color: '#666', marginVertical: 2}}>{pr.unit || ''}</Text>
                               
                               <View style={{flexDirection: 'row', alignItems: 'center', marginVertical: 2}}>
                                 <Text style={{fontWeight: 'bold', color: '#2e7d32', fontSize: 13}}>₹{effPrice}</Text>
@@ -877,6 +942,11 @@ export default function CustomerApp() {
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                       <Text style={{ fontWeight: 'bold', color: '#6a1b9a', fontSize: 11.5 }}>ORDER #{ord.id.slice(-6)}</Text>
                       <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                        <View style={{backgroundColor: ord.payment === 'Online' ? '#e1bee7' : '#c8e6c9', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginRight: 6}}>
+                          <Text style={{fontSize: 9, fontWeight: 'bold', color: ord.payment === 'Online' ? '#4a148c' : '#1b5e20'}}>
+                            {ord.payment === 'Online' ? '💳 Online' : '💵 COD'}
+                          </Text>
+                        </View>
                         <Text style={{ fontWeight: 'bold', color: '#2e7d32', marginRight: 6, fontSize: 11.5 }}>₹{ord.total}</Text>
                         <TouchableOpacity onPress={() => confirmDeleteOrder(ord.id)} style={{backgroundColor: isDeleting ? '#b71c1c' : '#c62828', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 3}}>
                           <Text style={{color: '#fff', fontSize: 8.5, fontWeight: 'bold'}}>{isDeleting ? '⚠️ Tap' : '🗑️'}</Text>
@@ -884,10 +954,10 @@ export default function CustomerApp() {
                       </View>
                     </View>
                     
-                    {renderTimelineTracker(ord.deliveryStatus)}
+                    {renderTimelineTracker(ord.deliveryStatus, ord.id)}
 
                     {!isCancelled && !ord.deliveryStatus?.includes('Delivered') && !ord.deliveryStatus?.includes('Out for Delivery') && (
-                      <TouchableOpacity onPress={() => cancelOrder(ord.id, ord.deliveryStatus)} style={{backgroundColor: '#d32f2f', padding: 5, borderRadius: 5, marginVertical: 3, alignItems: 'center'}}>
+                      <TouchableOpacity onPress={() => cancelOrder(ord.id, ord.deliveryStatus, ord.payment)} style={{backgroundColor: '#d32f2f', padding: 5, borderRadius: 5, marginVertical: 3, alignItems: 'center'}}>
                         <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 10}}>❌ Cancel This Order</Text>
                       </TouchableOpacity>
                     )}
@@ -906,7 +976,7 @@ export default function CustomerApp() {
                     <View style={s.itemsBox}>
                       <Text style={{fontSize: 9.5, fontWeight: 'bold', color: '#6a1b9a', marginBottom: 2}}>🛒 Purchased Items:</Text>
                       {Object.values(ord.items || {}).map((it, idx) => (
-                        <Text key={idx} style={{ fontSize: 10, color: '#333' }}>• {it.name} ({it.unit}) x {it.qty} = ₹{it.effectivePrice * it.qty}</Text>
+                        <Text key={idx} style={{ fontSize: 10, color: '#333' }}>• {it.name} ({it.unit}) x {it.qty} = ₹{Number(it.effectivePrice || 0) * Number(it.qty || 0)}</Text>
                       ))}
                     </View>
                   </View>
