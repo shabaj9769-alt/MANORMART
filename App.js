@@ -532,7 +532,8 @@ export default function CustomerApp() {
       deliveryShift,
       payment: paymentMode, 
       deliveryStatus: initialStatus, 
-      assignedBoy: '', 
+      assignedBoy: '',
+      deliveryBoyPhone: '',
       timestamp: currentTimestamp
     };
 
@@ -623,13 +624,13 @@ export default function CustomerApp() {
             Please review our Terms & Conditions, Privacy, and 5-7 Days Refund Policy before continuing.
           </Text>
           
-          <TouchableOpacity onPress={() => setShowLegalModal(true)} style={{marginBottom: 12, alignSelf: 'center'}}>
-            <Text style={{fontSize: 11.5, color: '#6a1b9a', fontWeight: 'bold', textDecorationLine: 'underline'}}>
-              📄 Read Complete Terms & Refund Policies
+          <TouchableOpacity onPress={() => setShowLegalModal(true)} style={s.policyInteractiveBtn}>
+            <Text style={{fontSize: 11.5, color: '#fff', fontWeight: 'bold', textAlign: 'center'}}>
+              📄 View Complete Terms & Refund Policies
             </Text>
           </TouchableOpacity>
 
-          <TouchableOpacity onPress={handleAcceptTerms} style={s.btn}>
+          <TouchableOpacity onPress={handleAcceptTerms} style={[s.btn, {marginTop: 10}]}>
             <Text style={s.btnTxt}>✨ I Agree & Start Shopping</Text>
           </TouchableOpacity>
         </View>
@@ -698,8 +699,8 @@ export default function CustomerApp() {
             <TextInput style={s.lockInput} placeholder="10-digit Phone" keyboardType="numeric" maxLength={10} value={loginPhoneInput} onChangeText={setLoginPhoneInput} />
             <TouchableOpacity style={s.lockBtn} onPress={handleLogin}><Text style={s.lockBtnTxt}>🚀 Enter Store Now</Text></TouchableOpacity>
             
-            <TouchableOpacity onPress={() => setShowLegalModal(true)} style={{marginTop: 12, alignSelf: 'center'}}>
-              <Text style={{fontSize: 10, color: '#6a1b9a', textDecorationLine: 'underline'}}>Terms, Privacy & Refund Policy</Text>
+            <TouchableOpacity onPress={() => setShowLegalModal(true)} style={s.policyInteractiveBtnSec}>
+              <Text style={{fontSize: 10.5, color: '#fff', fontWeight: 'bold', textAlign: 'center'}}>📄 Terms, Privacy & Refund Policy</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -938,6 +939,12 @@ export default function CustomerApp() {
                 let isCancelled = ord.deliveryStatus && ord.deliveryStatus.includes('Cancelled');
                 let orderTimeFormatted = formatOrderDateTime(ord.timestamp);
 
+                // Live search delivery boy info
+                let boy = deliveryBoysList[ord.assignedBoy] || 
+                          Object.values(deliveryBoysList || {}).find(b => b?.name === ord.assignedBoy || b?.id === ord.assignedBoy);
+                let boyPhone = ord.deliveryBoyPhone || ord.assignedBoyPhone || boy?.phone || '';
+                let boyName = boy?.name || ord.assignedBoy;
+
                 return (
                   <View key={ord.id} style={[s.card, {borderColor: isWaitingPayment ? '#e65100' : isCancelled ? '#c62828' : '#8e24aa', borderWidth: 1.2, padding: 10, width: '100%'}]}>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -962,6 +969,23 @@ export default function CustomerApp() {
                     ) : null}
                     
                     {renderTimelineTracker(ord.deliveryStatus, ord.id)}
+
+                    {ord.assignedBoy ? (
+                      <View style={{backgroundColor: '#e8f5e9', padding: 10, borderRadius: 8, marginVertical: 6, borderWidth: 1, borderColor: '#a5d6a7'}}>
+                        <Text style={{fontSize: 10, fontWeight: 'bold', color: '#2e7d32'}}>🛵 Assigned Delivery Partner:</Text>
+                        <Text style={{fontSize: 12, fontWeight: 'bold', color: '#1b5e20', marginTop: 2}}>
+                          {boyName} {boyPhone ? `(${boyPhone})` : ''}
+                        </Text>
+                        {boyPhone ? (
+                          <TouchableOpacity 
+                            onPress={() => Linking.openURL(`tel:${boyPhone}`)}
+                            style={{backgroundColor: '#2e7d32', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6, marginTop: 6, alignSelf: 'flex-start'}}
+                          >
+                            <Text style={{color: '#fff', fontSize: 11, fontWeight: 'bold'}}>📞 Call Delivery Partner</Text>
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
+                    ) : null}
 
                     {!isCancelled && !ord.deliveryStatus?.includes('Delivered') && !ord.deliveryStatus?.includes('Out for Delivery') && (
                       <TouchableOpacity 
@@ -1021,9 +1045,9 @@ export default function CustomerApp() {
 
             <View style={{marginTop: 15, backgroundColor: '#f3e5f5', padding: 10, borderRadius: 6}}>
               <Text style={{fontSize: 11, fontWeight: 'bold', color: '#4a148c', marginBottom: 4}}>📜 Legal & Store Policies:</Text>
-              <TouchableOpacity onPress={() => setShowLegalModal(true)} style={{paddingVertical: 4}}>
-                <Text style={{fontSize: 10.5, color: '#6a1b9a', textDecorationLine: 'underline', fontWeight: 'bold'}}>
-                  • View Terms, Privacy & Refund Policy (5-7 Days)
+              <TouchableOpacity onPress={() => setShowLegalModal(true)} style={s.policyInteractiveBtn}>
+                <Text style={{fontSize: 11, color: '#fff', fontWeight: 'bold', textAlign: 'center'}}>
+                  📄 View Terms, Privacy & Refund Policy (5-7 Days)
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1037,7 +1061,6 @@ export default function CustomerApp() {
         )}
       </ScrollView>
 
-      {/* ✅ Floating cart positioned 70px above bottom */}
       {subtotal > 0 && activeTab === 'shop' && storeSettings.storeOpen !== false && (
         <View style={s.floatingCartBar}>
           <View style={{flex: 1, paddingRight: 6}}>
@@ -1204,5 +1227,7 @@ const s = StyleSheet.create({
   policyBlockTitle: { fontSize: 12, fontWeight: 'bold', color: '#4a148c', marginBottom: 4 },
   policyText: { fontSize: 11, color: '#333', lineHeight: 16, marginBottom: 3 },
   policyBottomBar: { position: 'absolute', bottom: 60, left: 15, right: 15, zIndex: 999 },
-  policyCloseBtn: { backgroundColor: '#6a1b9a', paddingVertical: 12, borderRadius: 10, alignItems: 'center', elevation: 6 }
+  policyCloseBtn: { backgroundColor: '#6a1b9a', paddingVertical: 12, borderRadius: 10, alignItems: 'center', elevation: 6 },
+  policyInteractiveBtn: { backgroundColor: '#6a1b9a', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, marginVertical: 6, alignItems: 'center' },
+  policyInteractiveBtnSec: { backgroundColor: '#7b1fa2', paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, marginTop: 10, alignItems: 'center' }
 });
