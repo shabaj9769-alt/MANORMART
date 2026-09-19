@@ -380,11 +380,32 @@ export default function CustomerApp() {
   const handleLogin = async () => {
     let cleanPh = (loginPhoneInput || '').replace(/[^0-9]/g, '').trim();
     if (cleanPh.length !== 10) return Alert.alert("Invalid Phone", "Please enter a valid 10-digit mobile number!");
+    
     setCustPhone(cleanPh);
     setIsLoggedIn(true);
     await AsyncStorage.setItem('manor_cust_phone', cleanPh);
+    
+    // Purani history aur profile cloud se fetch karein
     fetchCustomerOrders(cleanPh);
-    Alert.alert("Welcome", "Logged in successfully!");
+    
+    fetch(db + `customers/${cleanPh}.json`).then(r => r.json()).then(async (userData) => {
+      if (userData) {
+        if (userData.name) {
+          setCustName(userData.name);
+          await AsyncStorage.setItem('manor_cust_name', userData.name);
+        }
+        if (userData.addr) {
+          setCustAddr(userData.addr);
+          await AsyncStorage.setItem('manor_cust_addr', userData.addr);
+        }
+        if (userData.addresses && Array.isArray(userData.addresses)) {
+          setSavedAddresses(userData.addresses);
+          await AsyncStorage.setItem('manor_cust_addrs_list', JSON.stringify(userData.addresses));
+        }
+      }
+    }).catch(() => {});
+
+    Alert.alert("Welcome", "Logged in successfully! Your orders and account history are restored.");
   };
 
   const fetchCustomerOrders = (phone) => {
@@ -402,7 +423,13 @@ export default function CustomerApp() {
     await AsyncStorage.removeItem('manor_cust_name');
     await AsyncStorage.removeItem('manor_cust_addr');
     await AsyncStorage.removeItem('manor_cust_addrs_list');
-    setIsLoggedIn(false); setCart({}); setActiveTab('shop');
+    setCustPhone('');
+    setCustName('');
+    setCustAddr('');
+    setSavedAddresses([]);
+    setIsLoggedIn(false);
+    setCart({});
+    setActiveTab('shop');
     Alert.alert("Logged Out", "Your session has been cleared.");
   };
 
@@ -484,6 +511,13 @@ export default function CustomerApp() {
       updatedAddrs.push(cleanAddr);
       setSavedAddresses(updatedAddrs);
       await AsyncStorage.setItem('manor_cust_addrs_list', JSON.stringify(updatedAddrs));
+      
+      if (custPhone) {
+        fetch(db + `customers/${custPhone}/addresses.json`, {
+          method: 'PUT',
+          body: JSON.stringify(updatedAddrs)
+        }).catch(() => {});
+      }
       Alert.alert("Saved", "Address added to your saved list!");
     }
   };
@@ -541,6 +575,12 @@ export default function CustomerApp() {
       method: 'PUT',
       body: JSON.stringify(orderObj)
     }).then(async () => {
+      // User profile backup to Firebase
+      fetch(db + `customers/${custPhone}.json`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: cleanName, addr: cleanAddr, phone: custPhone })
+      }).catch(() => {});
+
       setCart({});
       if (paymentMode === 'Online') {
         await AsyncStorage.setItem('manor_pending_ord', orderId);
@@ -939,7 +979,6 @@ export default function CustomerApp() {
                 let isCancelled = ord.deliveryStatus && ord.deliveryStatus.includes('Cancelled');
                 let orderTimeFormatted = formatOrderDateTime(ord.timestamp);
 
-                // Live search delivery boy info
                 let boy = deliveryBoysList[ord.assignedBoy] || 
                           Object.values(deliveryBoysList || {}).find(b => b?.name === ord.assignedBoy || b?.id === ord.assignedBoy);
                 let boyPhone = ord.deliveryBoyPhone || ord.assignedBoyPhone || boy?.phone || '';
@@ -1040,6 +1079,12 @@ export default function CustomerApp() {
             <TouchableOpacity style={[s.btn, {backgroundColor: '#6a1b9a', marginTop: 8, padding: 10}]} onPress={async () => {
               await AsyncStorage.setItem('manor_cust_name', custName);
               await AsyncStorage.setItem('manor_cust_addr', custAddr);
+              if (custPhone) {
+                fetch(db + `customers/${custPhone}.json`, {
+                  method: 'PATCH',
+                  body: JSON.stringify({ name: custName, addr: custAddr })
+                }).catch(() => {});
+              }
               Alert.alert("Success", "Profile updated successfully!");
             }}><Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>💾 Save Profile</Text></TouchableOpacity>
 
