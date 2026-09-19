@@ -131,7 +131,6 @@ export default function CustomerApp() {
       }
     }).catch(() => {});
 
-    // 🔔 Notification click listener (Offer tap hone par link open karega)
     const notifSub = Notifications.addNotificationResponseReceivedListener(response => {
       const data = response.notification.request.content.data;
       if (data?.url) {
@@ -167,7 +166,7 @@ export default function CustomerApp() {
     };
   }, [custPhone, custLat, custLng]);
 
-  // 🔔 FIXED: Standalone APK Push Registration with ProjectId
+  // 🔔 Standalone APK Push Token Setup (Fixed with EAS ProjectId)
   const registerForPushNotifications = async (phoneOverride = '') => {
     if (Platform.OS === 'web') return;
     try {
@@ -190,7 +189,7 @@ export default function CustomerApp() {
         }
         if (finalStatus !== 'granted') return;
 
-        // Standalone APK ke liye explicit projectId zaroori hai
+        // Standalone APK ke liye explicit EAS ProjectId[span_0](start_span)[span_0](end_span)
         const tokenData = await Notifications.getExpoPushTokenAsync({
           projectId: "35fa08b6-386b-4e9d-82d9-940962809197"
         });
@@ -221,7 +220,7 @@ export default function CustomerApp() {
     }).catch(() => {});
   };
 
-  // 🚨 Admin Phone par High-Priority Push Alert bhejna
+  // 🚨 Admin Phone Alert
   const triggerPushToAdmin = async (orderId, totalAmt) => {
     try {
       let targetToken = storeSettings.adminPushToken;
@@ -373,7 +372,7 @@ export default function CustomerApp() {
     } catch (e) {}
   };
 
-  // 📍 FIXED: High Accuracy Device GPS Satellite Lock
+  // 📍 Accurate Satellite GPS
   const detectGPSAndLoadStore = async (forceManual = false) => {
     try {
       if (Platform.OS === 'web') {
@@ -396,7 +395,7 @@ export default function CustomerApp() {
         
         if (status === 'granted') {
           let loc = await Location.getCurrentPositionAsync({ 
-            accuracy: Location.Accuracy.High, // High satellite accuracy
+            accuracy: Location.Accuracy.High,
             timeout: 10000
           }).catch(() => null);
 
@@ -546,7 +545,7 @@ export default function CustomerApp() {
   if (deliveryType === 'Express') deliveryFee += expExtra;
   let finalTotal = subtotal + (subtotal > 0 ? deliveryFee : 0);
 
-  // 🚀 FIXED: Login hone par instant token save trigger
+  // 🚀 Fresh Login Token Trigger
   const handleLogin = async () => {
     let cleanPh = (loginPhoneInput || '').replace(/[^0-9]/g, '').trim();
     if (cleanPh.length !== 10) return Alert.alert("Invalid Phone", "Please enter a valid 10-digit mobile number!");
@@ -752,7 +751,6 @@ export default function CustomerApp() {
         body: JSON.stringify({ name: cleanName, addr: cleanAddr, phone: custPhone })
       }).catch(() => {});
 
-      // 🚨 Admin ko background push alert trigger karein
       triggerPushToAdmin(orderId, finalTotal);
 
       setCart({});
