@@ -167,16 +167,17 @@ export default function CustomerApp() {
     };
   }, [custPhone, custLat, custLng]);
 
-  // 🔔 Push Notification Registration & Token Sync
-  const registerForPushNotifications = async () => {
+  // 🔔 FIXED: Standalone APK Push Registration with ProjectId
+  const registerForPushNotifications = async (phoneOverride = '') => {
     if (Platform.OS === 'web') return;
     try {
       if (Platform.OS === 'android') {
         await Notifications.setNotificationChannelAsync('default', {
-          name: 'default',
+          name: 'Default Channel',
           importance: Notifications.AndroidImportance.MAX,
           vibrationPattern: [0, 250, 250, 250],
           lightColor: '#6a1b9a',
+          sound: 'default',
         });
       }
 
@@ -187,12 +188,17 @@ export default function CustomerApp() {
           const { status } = await Notifications.requestPermissionsAsync();
           finalStatus = status;
         }
-        if (finalStatus === 'granted') {
-          const tokenData = await Notifications.getExpoPushTokenAsync();
-          if (tokenData?.data) {
-            myPushTokenRef.current = tokenData.data;
-            saveCustomerPushToken(tokenData.data, custPhone);
-          }
+        if (finalStatus !== 'granted') return;
+
+        // Standalone APK ke liye explicit projectId zaroori hai
+        const tokenData = await Notifications.getExpoPushTokenAsync({
+          projectId: "35fa08b6-386b-4e9d-82d9-940962809197"
+        });
+
+        if (tokenData?.data) {
+          myPushTokenRef.current = tokenData.data;
+          let activePhone = phoneOverride || custPhone || await AsyncStorage.getItem('manor_cust_phone');
+          saveCustomerPushToken(tokenData.data, activePhone);
         }
       }
     } catch (e) {
@@ -202,18 +208,20 @@ export default function CustomerApp() {
 
   const saveCustomerPushToken = (token, phone) => {
     if (!token) return;
-    let tokenKey = phone && phone.trim().length === 10 ? phone.trim() : 'token_' + token.slice(-12).replace(/[^a-zA-Z0-9]/g, '');
+    let clean = (phone || '').replace(/[^0-9]/g, '').trim();
+    let tokenKey = clean.length === 10 ? clean : 'token_' + token.slice(-12).replace(/[^a-zA-Z0-9]/g, '');
     fetch(db + `customerTokens/${tokenKey}.json`, {
       method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         token: token,
-        phone: phone || '',
+        phone: clean || '',
         updatedAt: Date.now()
       })
     }).catch(() => {});
   };
 
-  // 🚨 Admin Phone par High-Priority Push Alert bhejna (with deep link to Admin App)
+  // 🚨 Admin Phone par High-Priority Push Alert bhejna
   const triggerPushToAdmin = async (orderId, totalAmt) => {
     try {
       let targetToken = storeSettings.adminPushToken;
@@ -236,7 +244,7 @@ export default function CustomerApp() {
           title: '🚨 NAYA ORDER AAYA!',
           body: `Order #${orderId.slice(-6)} mila hai! Total: ₹${totalAmt}`,
           priority: 'high',
-          channelId: 'order-alerts',
+          channelId: 'default',
           data: { 
             orderId: orderId,
             url: 'martadmin://' 
@@ -342,14 +350,11 @@ export default function CustomerApp() {
         }
         setIsLoggedIn(true);
         fetchCustomerOrders(savedPhone);
-        if (myPushTokenRef.current) {
-          saveCustomerPushToken(myPushTokenRef.current, savedPhone);
-        }
+        registerForPushNotifications(savedPhone);
       }
     } catch(e) {}
   };
 
-  // 📍 SMART ADDRESS GEOCODING
   const fetchLocationFromAddress = async (addressText) => {
     if (!addressText || addressText.trim().length < 3) return;
     try {
@@ -368,7 +373,7 @@ export default function CustomerApp() {
     } catch (e) {}
   };
 
-  // 📍 GPS ENGINE WITH SETTINGS SHORTCUT
+  // 📍 FIXED: High Accuracy Device GPS Satellite Lock
   const detectGPSAndLoadStore = async (forceManual = false) => {
     try {
       if (Platform.OS === 'web') {
@@ -381,7 +386,7 @@ export default function CustomerApp() {
               loadStoreConfig(pos.coords.latitude, pos.coords.longitude);
             },
             () => fallbackToNetworkLocation(forceManual),
-            { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 }
+            { enableHighAccuracy: true, timeout: 7000, maximumAge: 10000 }
           );
         } else {
           fallbackToNetworkLocation(forceManual);
@@ -391,8 +396,8 @@ export default function CustomerApp() {
         
         if (status === 'granted') {
           let loc = await Location.getCurrentPositionAsync({ 
-            accuracy: Location.Accuracy.Balanced,
-            timeout: 7000
+            accuracy: Location.Accuracy.High, // High satellite accuracy
+            timeout: 10000
           }).catch(() => null);
 
           if (loc?.coords) {
@@ -400,7 +405,7 @@ export default function CustomerApp() {
             setCustLat(loc.coords.latitude);
             setCustLng(loc.coords.longitude);
             loadStoreConfig(loc.coords.latitude, loc.coords.longitude);
-            if (forceManual) Alert.alert("📍 Location Updated", "Refreshed via Device GPS!");
+            if (forceManual) Alert.alert("📍 Location Updated", "Refreshed via High Accuracy GPS!");
             return;
           }
         }
@@ -541,6 +546,7 @@ export default function CustomerApp() {
   if (deliveryType === 'Express') deliveryFee += expExtra;
   let finalTotal = subtotal + (subtotal > 0 ? deliveryFee : 0);
 
+  // 🚀 FIXED: Login hone par instant token save trigger
   const handleLogin = async () => {
     let cleanPh = (loginPhoneInput || '').replace(/[^0-9]/g, '').trim();
     if (cleanPh.length !== 10) return Alert.alert("Invalid Phone", "Please enter a valid 10-digit mobile number!");
@@ -549,10 +555,7 @@ export default function CustomerApp() {
     setIsLoggedIn(true);
     await AsyncStorage.setItem('manor_cust_phone', cleanPh);
     
-    if (myPushTokenRef.current) {
-      saveCustomerPushToken(myPushTokenRef.current, cleanPh);
-    }
-    
+    registerForPushNotifications(cleanPh);
     fetchCustomerOrders(cleanPh);
     
     fetch(db + `customers/${cleanPh}.json`).then(r => r.json()).then(async (userData) => {
