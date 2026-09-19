@@ -89,7 +89,13 @@ export default function CustomerApp() {
       if (!event?.url) return;
       try {
         let urlStr = event.url;
-        if (urlStr.includes('success') || urlStr.includes('razorpay_payment_id')) {
+        if (urlStr.includes('shop')) {
+          setActiveTab('shop');
+        } else if (urlStr.includes('orders')) {
+          let phone = custPhone || await AsyncStorage.getItem('manor_cust_phone');
+          if (phone) fetchCustomerOrders(phone);
+          setActiveTab('orders');
+        } else if (urlStr.includes('success') || urlStr.includes('razorpay_payment_id')) {
           let pendingOrderId = await AsyncStorage.getItem('manor_pending_ord');
           if (pendingOrderId) {
             await verifyAndConfirmOrder(pendingOrderId);
@@ -105,17 +111,35 @@ export default function CustomerApp() {
     const sub = Linking.addEventListener('url', handleDeepLink);
 
     Linking.getInitialURL().then(async (url) => {
-      if (url && (url.includes('success') || url.includes('razorpay_payment_id'))) {
-        let pendingOrderId = await AsyncStorage.getItem('manor_pending_ord');
-        if (pendingOrderId) {
-          await verifyAndConfirmOrder(pendingOrderId);
-        } else {
+      if (url) {
+        if (url.includes('shop')) {
+          setActiveTab('shop');
+        } else if (url.includes('orders')) {
           let phone = custPhone || await AsyncStorage.getItem('manor_cust_phone');
           if (phone) fetchCustomerOrders(phone);
           setActiveTab('orders');
+        } else if (url.includes('success') || url.includes('razorpay_payment_id')) {
+          let pendingOrderId = await AsyncStorage.getItem('manor_pending_ord');
+          if (pendingOrderId) {
+            await verifyAndConfirmOrder(pendingOrderId);
+          } else {
+            let phone = custPhone || await AsyncStorage.getItem('manor_cust_phone');
+            if (phone) fetchCustomerOrders(phone);
+            setActiveTab('orders');
+          }
         }
       }
     }).catch(() => {});
+
+    // 🔔 Notification click listener (Offer tap hone par link open karega)
+    const notifSub = Notifications.addNotificationResponseReceivedListener(response => {
+      const data = response.notification.request.content.data;
+      if (data?.url) {
+        Linking.openURL(data.url).catch(() => {});
+      } else {
+        setActiveTab('shop');
+      }
+    });
 
     const autoRefreshInterval = setInterval(() => {
       fetch(db + ".json").then(r => r.json()).then(data => {
@@ -139,6 +163,7 @@ export default function CustomerApp() {
     return () => {
       clearInterval(autoRefreshInterval);
       if (sub && sub.remove) sub.remove();
+      if (notifSub && notifSub.remove) notifSub.remove();
     };
   }, [custPhone, custLat, custLng]);
 
@@ -188,7 +213,7 @@ export default function CustomerApp() {
     }).catch(() => {});
   };
 
-  // 🚨 Admin Phone par High-Priority Push Alert bhejna
+  // 🚨 Admin Phone par High-Priority Push Alert bhejna (with deep link to Admin App)
   const triggerPushToAdmin = async (orderId, totalAmt) => {
     try {
       let targetToken = storeSettings.adminPushToken;
@@ -212,7 +237,10 @@ export default function CustomerApp() {
           body: `Order #${orderId.slice(-6)} mila hai! Total: ₹${totalAmt}`,
           priority: 'high',
           channelId: 'order-alerts',
-          data: { orderId: orderId }
+          data: { 
+            orderId: orderId,
+            url: 'martadmin://' 
+          }
         }),
       });
     } catch (e) {
@@ -321,7 +349,7 @@ export default function CustomerApp() {
     } catch(e) {}
   };
 
-  // 📍 SMART ADDRESS GEOCODING (Bina GPS ke text address se auto coordinates nikalna)
+  // 📍 SMART ADDRESS GEOCODING
   const fetchLocationFromAddress = async (addressText) => {
     if (!addressText || addressText.trim().length < 3) return;
     try {
@@ -377,7 +405,6 @@ export default function CustomerApp() {
           }
         }
 
-        // Agar user ne 'Don't allow' kiya ho
         if (forceManual) {
           Alert.alert(
             "📍 GPS Permission Required", 
