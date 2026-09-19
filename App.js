@@ -1,4 +1,4 @@
-// --- MANOR MART ADVANCED INSTAMART-STYLE CUSTOMER APP ---
+// --- MANOR MART ADVANCED INSTAMART-STYLE CUSTOMER APP (AUTO ADDRESS GEOCODING + PUSH ENGINE) ---
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   StyleSheet, Text, View, TextInput, TouchableOpacity, 
@@ -7,8 +7,19 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
+import * as Notifications from 'expo-notifications';
+import * as Device from 'expo-device';
 
 const db = "https://manorbiryani-default-rtdb.firebaseio.com/";
+
+// Foreground Notification handling
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 export default function CustomerApp() {
   const [storeSettings, setStoreSettings] = useState({
@@ -27,7 +38,8 @@ export default function CustomerApp() {
     storeOpen: true,
     b1: '',
     b2: '',
-    b3: ''
+    b3: '',
+    adminPushToken: ''
   });
 
   const [categories, setCategories] = useState({});
@@ -61,11 +73,13 @@ export default function CustomerApp() {
   const [cancelStepOrder, setCancelStepOrder] = useState(null);
 
   const gpsFetchedRef = useRef(false);
+  const myPushTokenRef = useRef('');
 
   useEffect(() => {
     checkInitialTermsAgreement();
     checkSavedCustomerSession();
     checkURLPaymentReturn();
+    registerForPushNotifications();
 
     if (!gpsFetchedRef.current) {
       detectGPSAndLoadStore(false);
@@ -127,6 +141,84 @@ export default function CustomerApp() {
       if (sub && sub.remove) sub.remove();
     };
   }, [custPhone, custLat, custLng]);
+
+  // 🔔 Push Notification Registration & Token Sync
+  const registerForPushNotifications = async () => {
+    if (Platform.OS === 'web') return;
+    try {
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('default', {
+          name: 'default',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#6a1b9a',
+        });
+      }
+
+      if (Device.isDevice) {
+        const { status: existingStatus } = await Notifications.getPermissionsAsync();
+        let finalStatus = existingStatus;
+        if (existingStatus !== 'granted') {
+          const { status } = await Notifications.requestPermissionsAsync();
+          finalStatus = status;
+        }
+        if (finalStatus === 'granted') {
+          const tokenData = await Notifications.getExpoPushTokenAsync();
+          if (tokenData?.data) {
+            myPushTokenRef.current = tokenData.data;
+            saveCustomerPushToken(tokenData.data, custPhone);
+          }
+        }
+      }
+    } catch (e) {
+      console.log("Push Token Error:", e);
+    }
+  };
+
+  const saveCustomerPushToken = (token, phone) => {
+    if (!token) return;
+    let tokenKey = phone && phone.trim().length === 10 ? phone.trim() : 'token_' + token.slice(-12).replace(/[^a-zA-Z0-9]/g, '');
+    fetch(db + `customerTokens/${tokenKey}.json`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        token: token,
+        phone: phone || '',
+        updatedAt: Date.now()
+      })
+    }).catch(() => {});
+  };
+
+  // 🚨 Admin Phone par High-Priority Push Alert bhejna
+  const triggerPushToAdmin = async (orderId, totalAmt) => {
+    try {
+      let targetToken = storeSettings.adminPushToken;
+      if (!targetToken) {
+        let setSnap = await fetch(db + "settings/adminPushToken.json").then(r => r.json());
+        targetToken = setSnap;
+      }
+      if (!targetToken) return;
+
+      await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Accept-Encoding': 'gzip, deflate',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          to: targetToken,
+          sound: 'default',
+          title: '🚨 NAYA ORDER AAYA!',
+          body: `Order #${orderId.slice(-6)} mila hai! Total: ₹${totalAmt}`,
+          priority: 'high',
+          channelId: 'order-alerts',
+          data: { orderId: orderId }
+        }),
+      });
+    } catch (e) {
+      console.log("Push trigger error:", e);
+    }
+  };
 
   useEffect(() => {
     const backAction = () => {
@@ -211,7 +303,10 @@ export default function CustomerApp() {
       if (savedPhone) {
         setCustPhone(savedPhone);
         if (savedName) setCustName(savedName);
-        if (savedAddr) setCustAddr(savedAddr);
+        if (savedAddr) {
+          setCustAddr(savedAddr);
+          fetchLocationFromAddress(savedAddr);
+        }
         if (savedAddrsList) {
           try { setSavedAddresses(JSON.parse(savedAddrsList)); } catch(e){}
         } else if (savedAddr) {
@@ -219,16 +314,34 @@ export default function CustomerApp() {
         }
         setIsLoggedIn(true);
         fetchCustomerOrders(savedPhone);
+        if (myPushTokenRef.current) {
+          saveCustomerPushToken(myPushTokenRef.current, savedPhone);
+        }
       }
     } catch(e) {}
   };
 
-  const detectGPSAndLoadStore = async (forceManual = false) => {
-    if (gpsFetchedRef.current && !forceManual) {
-      loadStoreConfig(custLat, custLng);
-      return;
-    }
+  // 📍 SMART ADDRESS GEOCODING (Bina GPS ke text address se auto coordinates nikalna)
+  const fetchLocationFromAddress = async (addressText) => {
+    if (!addressText || addressText.trim().length < 3) return;
+    try {
+      let query = encodeURIComponent(`${addressText.trim()}, Manor, Palghar, Maharashtra`);
+      let res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}`, {
+        headers: { 'User-Agent': 'ManorMartApp/1.0' }
+      });
+      let data = await res.json();
+      if (data && data.length > 0) {
+        let lat = parseFloat(data[0].lat);
+        let lng = parseFloat(data[0].lon);
+        setCustLat(lat);
+        setCustLng(lng);
+        calcGeoFence(lat, lng, storeSettings.hubLat, storeSettings.hubLng, storeSettings.radiusKm);
+      }
+    } catch (e) {}
+  };
 
+  // 📍 GPS ENGINE WITH SETTINGS SHORTCUT
+  const detectGPSAndLoadStore = async (forceManual = false) => {
     try {
       if (Platform.OS === 'web') {
         if (typeof navigator !== 'undefined' && navigator.geolocation) {
@@ -239,21 +352,19 @@ export default function CustomerApp() {
               setCustLng(pos.coords.longitude);
               loadStoreConfig(pos.coords.latitude, pos.coords.longitude);
             },
-            () => {
-              gpsFetchedRef.current = true;
-              loadStoreConfig(custLat, custLng);
-            },
-            { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
+            () => fallbackToNetworkLocation(forceManual),
+            { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 }
           );
         } else {
-          loadStoreConfig(custLat, custLng);
+          fallbackToNetworkLocation(forceManual);
         }
       } else {
         let { status } = await Location.requestForegroundPermissionsAsync().catch(() => ({ status: 'denied' }));
+        
         if (status === 'granted') {
           let loc = await Location.getCurrentPositionAsync({ 
-            accuracy: Location.Accuracy.Lowest,
-            maximumAge: 60000 
+            accuracy: Location.Accuracy.Balanced,
+            timeout: 7000
           }).catch(() => null);
 
           if (loc?.coords) {
@@ -261,16 +372,42 @@ export default function CustomerApp() {
             setCustLat(loc.coords.latitude);
             setCustLng(loc.coords.longitude);
             loadStoreConfig(loc.coords.latitude, loc.coords.longitude);
-            if (forceManual) Alert.alert("📍 Location Updated", "Your location has been refreshed.");
+            if (forceManual) Alert.alert("📍 Location Updated", "Refreshed via Device GPS!");
             return;
           }
         }
-        gpsFetchedRef.current = true;
-        loadStoreConfig(custLat, custLng);
+
+        // Agar user ne 'Don't allow' kiya ho
+        if (forceManual) {
+          Alert.alert(
+            "📍 GPS Permission Required", 
+            "Door-step accurate delivery distance ke liye settings me jakar location allow karein, ya neeche apna sahi Address likhein.",
+            [
+              { text: "Cancel", style: "cancel" },
+              { text: "Open Settings", onPress: () => Linking.openSettings() }
+            ]
+          );
+        }
+        await fallbackToNetworkLocation(false);
       }
     } catch (e) {
-      loadStoreConfig(custLat, custLng);
+      fallbackToNetworkLocation(forceManual);
     }
+  };
+
+  const fallbackToNetworkLocation = async (showPrompt = false) => {
+    gpsFetchedRef.current = true;
+    try {
+      let res = await fetch("https://ipapi.co/json/").then(r => r.json());
+      if (res && res.latitude && res.longitude) {
+        setCustLat(res.latitude);
+        setCustLng(res.longitude);
+        loadStoreConfig(res.latitude, res.longitude);
+        return;
+      }
+    } catch (err) {}
+
+    loadStoreConfig(custLat, custLng);
   };
 
   const loadStoreConfig = (lat, lng) => {
@@ -385,7 +522,10 @@ export default function CustomerApp() {
     setIsLoggedIn(true);
     await AsyncStorage.setItem('manor_cust_phone', cleanPh);
     
-    // Purani history aur profile cloud se fetch karein
+    if (myPushTokenRef.current) {
+      saveCustomerPushToken(myPushTokenRef.current, cleanPh);
+    }
+    
     fetchCustomerOrders(cleanPh);
     
     fetch(db + `customers/${cleanPh}.json`).then(r => r.json()).then(async (userData) => {
@@ -397,6 +537,7 @@ export default function CustomerApp() {
         if (userData.addr) {
           setCustAddr(userData.addr);
           await AsyncStorage.setItem('manor_cust_addr', userData.addr);
+          fetchLocationFromAddress(userData.addr);
         }
         if (userData.addresses && Array.isArray(userData.addresses)) {
           setSavedAddresses(userData.addresses);
@@ -520,6 +661,7 @@ export default function CustomerApp() {
       }
       Alert.alert("Saved", "Address added to your saved list!");
     }
+    fetchLocationFromAddress(cleanAddr);
   };
 
   const placeOrder = async () => {
@@ -575,11 +717,13 @@ export default function CustomerApp() {
       method: 'PUT',
       body: JSON.stringify(orderObj)
     }).then(async () => {
-      // User profile backup to Firebase
       fetch(db + `customers/${custPhone}.json`, {
         method: 'PATCH',
         body: JSON.stringify({ name: cleanName, addr: cleanAddr, phone: custPhone })
       }).catch(() => {});
+
+      // 🚨 Admin ko background push alert trigger karein
+      triggerPushToAdmin(orderId, finalTotal);
 
       setCart({});
       if (paymentMode === 'Online') {
@@ -781,7 +925,7 @@ export default function CustomerApp() {
           <View style={{flex: 1, paddingRight: 6}}>
             <Text style={s.ht} numberOfLines={1}>🛒 {storeSettings.store}</Text>
             <Text style={{fontSize: 10, color: '#ffd54f', fontWeight: 'bold', marginTop: 2}} numberOfLines={1}>
-              📍 Delivery to: {custAddr ? custAddr : 'Enter address in Profile'}
+              📍 Delivery to: {custAddr ? custAddr : 'Enter address in Profile/Cart'}
             </Text>
           </View>
           <View style={{flexDirection: 'row', alignItems: 'center'}}>
@@ -1058,8 +1202,15 @@ export default function CustomerApp() {
             <Text style={s.lbl}>Mobile Number (Fixed):</Text>
             <TextInput style={[s.i, {backgroundColor: '#f5f5f5'}]} value={custPhone} editable={false} />
             
-            <Text style={s.lbl}>Delivery Address:</Text>
-            <TextInput style={[s.i, {height: 55}]} value={custAddr} onChangeText={v => setCustAddr(sanitizeInput(v))} placeholder="House No, Landmark, Area" multiline={true} />
+            <Text style={s.lbl}>Delivery Address (Type area to auto-detect location):</Text>
+            <TextInput 
+              style={[s.i, {height: 55}]} 
+              value={custAddr} 
+              onChangeText={v => setCustAddr(sanitizeInput(v))} 
+              onBlur={() => fetchLocationFromAddress(custAddr)}
+              placeholder="House No, Landmark, Area (e.g. Mastan Naka)" 
+              multiline={true} 
+            />
             
             <TouchableOpacity style={{backgroundColor: '#7b1fa2', padding: 7, borderRadius: 5, alignItems: 'center', marginVertical: 3}} onPress={saveCurrentAddress}>
               <Text style={{color: '#fff', fontSize: 10.5, fontWeight: 'bold'}}>📍 Save This Address</Text>
@@ -1069,7 +1220,7 @@ export default function CustomerApp() {
               <View style={{marginTop: 5}}>
                 <Text style={{fontSize: 10, fontWeight: 'bold', color: '#4a148c'}}>Saved Addresses (Tap to select):</Text>
                 {savedAddresses.map((ad, i) => (
-                  <TouchableOpacity key={i} onPress={() => setCustAddr(ad)} style={{backgroundColor: '#f3e5f5', padding: 5, borderRadius: 4, marginVertical: 2}}>
+                  <TouchableOpacity key={i} onPress={() => { setCustAddr(ad); fetchLocationFromAddress(ad); }} style={{backgroundColor: '#f3e5f5', padding: 5, borderRadius: 4, marginVertical: 2}}>
                     <Text style={{fontSize: 9.5, color: '#333'}}>{ad}</Text>
                   </TouchableOpacity>
                 ))}
@@ -1079,11 +1230,15 @@ export default function CustomerApp() {
             <TouchableOpacity style={[s.btn, {backgroundColor: '#6a1b9a', marginTop: 8, padding: 10}]} onPress={async () => {
               await AsyncStorage.setItem('manor_cust_name', custName);
               await AsyncStorage.setItem('manor_cust_addr', custAddr);
+              fetchLocationFromAddress(custAddr);
               if (custPhone) {
                 fetch(db + `customers/${custPhone}.json`, {
                   method: 'PATCH',
                   body: JSON.stringify({ name: custName, addr: custAddr })
                 }).catch(() => {});
+                if (myPushTokenRef.current) {
+                  saveCustomerPushToken(myPushTokenRef.current, custPhone);
+                }
               }
               Alert.alert("Success", "Profile updated successfully!");
             }}><Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>💾 Save Profile</Text></TouchableOpacity>
@@ -1160,15 +1315,23 @@ export default function CustomerApp() {
               <TextInput style={s.i} placeholder="Enter Full Name (Required)" value={custName} onChangeText={v => setCustName(v)} />
               <Text style={s.lbl}>Mobile Number:</Text>
               <TextInput style={[s.i, {backgroundColor: '#f5f5f5'}]} value={custPhone} editable={false} />
-              <Text style={s.lbl}>Delivery Address (Distance: {distanceKm} KM):</Text>
-              <TextInput style={[s.i, {height: 55}]} placeholder="House No, Landmark, Area (Required)" multiline={true} value={custAddr} onChangeText={v => setCustAddr(v)} />
+              
+              <Text style={s.lbl}>Delivery Address (Type area to auto-check distance):</Text>
+              <TextInput 
+                style={[s.i, {height: 55}]} 
+                placeholder="House No, Landmark, Area (e.g. Mastan Naka)" 
+                multiline={true} 
+                value={custAddr} 
+                onChangeText={v => setCustAddr(v)} 
+                onBlur={() => fetchLocationFromAddress(custAddr)}
+              />
 
               {savedAddresses.length > 0 && (
                 <View style={{marginVertical: 3}}>
                   <Text style={{fontSize: 9.5, fontWeight: 'bold', color: '#6a1b9a'}}>Quick Select Saved Address:</Text>
                   <ScrollView horizontal={true} showsHorizontalScrollIndicator={false} style={{marginTop: 2}}>
                     {savedAddresses.map((ad, i) => (
-                      <TouchableOpacity key={i} onPress={() => setCustAddr(ad)} style={{backgroundColor: '#f3e5f5', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4, marginRight: 4}}>
+                      <TouchableOpacity key={i} onPress={() => { setCustAddr(ad); fetchLocationFromAddress(ad); }} style={{backgroundColor: '#f3e5f5', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4, marginRight: 4}}>
                         <Text style={{fontSize: 9, color: '#4a148c'}}>{ad}</Text>
                       </TouchableOpacity>
                     ))}
