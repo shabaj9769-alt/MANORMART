@@ -1,4 +1,4 @@
-// --- MANOR MART ADVANCED INSTAMART-STYLE CUSTOMER APP (AUTO ADDRESS GEOCODING + PUSH ENGINE) ---
+// --- MANOR MART ADVANCED INSTAMART-STYLE CUSTOMER APP (FULL ENGLISH + STRUCTURED PROFILE UI) ---
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   StyleSheet, Text, View, TextInput, TouchableOpacity, 
@@ -74,6 +74,9 @@ export default function CustomerApp() {
 
   const gpsFetchedRef = useRef(false);
   const myPushTokenRef = useRef('');
+  const custLatRef = useRef(19.7244);
+  const custLngRef = useRef(72.9097);
+  const isManualAddressRef = useRef(false);
 
   useEffect(() => {
     checkInitialTermsAgreement();
@@ -146,7 +149,7 @@ export default function CustomerApp() {
         if (data.settings) {
           setStoreSettings(prev => {
             const updated = { ...prev, ...data.settings };
-            calcGeoFence(custLat, custLng, updated.hubLat, updated.hubLng, updated.radiusKm);
+            calcGeoFence(custLatRef.current, custLngRef.current, updated.hubLat, updated.hubLng, updated.radiusKm);
             return updated;
           });
         }
@@ -157,26 +160,27 @@ export default function CustomerApp() {
       if (custPhone) {
         fetchCustomerOrders(custPhone);
       }
-    }, 5000);
+    }, 6000);
 
     return () => {
       clearInterval(autoRefreshInterval);
       if (sub && sub.remove) sub.remove();
       if (notifSub && notifSub.remove) notifSub.remove();
     };
-  }, [custPhone, custLat, custLng]);
+  }, [custPhone]);
 
-  // 🔔 Standalone APK Push Token Setup (Fixed with EAS ProjectId)
   const registerForPushNotifications = async (phoneOverride = '') => {
     if (Platform.OS === 'web') return;
     try {
       if (Platform.OS === 'android') {
         await Notifications.setNotificationChannelAsync('default', {
-          name: 'Default Channel',
+          name: 'Orders & Offers Channel',
           importance: Notifications.AndroidImportance.MAX,
           vibrationPattern: [0, 250, 250, 250],
           lightColor: '#6a1b9a',
           sound: 'default',
+          enableVibrate: true,
+          showBadge: true
         });
       }
 
@@ -189,7 +193,6 @@ export default function CustomerApp() {
         }
         if (finalStatus !== 'granted') return;
 
-        // Standalone APK ke liye explicit EAS ProjectId[span_0](start_span)[span_0](end_span)
         const tokenData = await Notifications.getExpoPushTokenAsync({
           projectId: "35fa08b6-386b-4e9d-82d9-940962809197"
         });
@@ -220,7 +223,6 @@ export default function CustomerApp() {
     }).catch(() => {});
   };
 
-  // 🚨 Admin Phone Alert
   const triggerPushToAdmin = async (orderId, totalAmt) => {
     try {
       let targetToken = storeSettings.adminPushToken;
@@ -240,8 +242,8 @@ export default function CustomerApp() {
         body: JSON.stringify({
           to: targetToken,
           sound: 'default',
-          title: '🚨 NAYA ORDER AAYA!',
-          body: `Order #${orderId.slice(-6)} mila hai! Total: ₹${totalAmt}`,
+          title: '🚨 NEW ORDER RECEIVED!',
+          body: `Order #${orderId.slice(-6)} received! Total: ₹${totalAmt}`,
           priority: 'high',
           channelId: 'default',
           data: { 
@@ -338,10 +340,7 @@ export default function CustomerApp() {
       if (savedPhone) {
         setCustPhone(savedPhone);
         if (savedName) setCustName(savedName);
-        if (savedAddr) {
-          setCustAddr(savedAddr);
-          fetchLocationFromAddress(savedAddr);
-        }
+        if (savedAddr) setCustAddr(savedAddr);
         if (savedAddrsList) {
           try { setSavedAddresses(JSON.parse(savedAddrsList)); } catch(e){}
         } else if (savedAddr) {
@@ -357,14 +356,22 @@ export default function CustomerApp() {
   const fetchLocationFromAddress = async (addressText) => {
     if (!addressText || addressText.trim().length < 3) return;
     try {
-      let query = encodeURIComponent(`${addressText.trim()}, Manor, Palghar, Maharashtra`);
+      isManualAddressRef.current = true;
+      let clean = addressText.trim();
+      let queryStr = clean;
+      if (!queryStr.toLowerCase().includes('maharashtra')) {
+        queryStr += ', Maharashtra, India';
+      }
+      let query = encodeURIComponent(queryStr);
       let res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}`, {
-        headers: { 'User-Agent': 'ManorMartApp/1.0' }
+        headers: { 'User-Agent': 'ManorMartApp/3.0' }
       });
       let data = await res.json();
       if (data && data.length > 0) {
         let lat = parseFloat(data[0].lat);
         let lng = parseFloat(data[0].lon);
+        custLatRef.current = lat;
+        custLngRef.current = lng;
         setCustLat(lat);
         setCustLng(lng);
         calcGeoFence(lat, lng, storeSettings.hubLat, storeSettings.hubLng, storeSettings.radiusKm);
@@ -372,50 +379,74 @@ export default function CustomerApp() {
     } catch (e) {}
   };
 
-  // 📍 Accurate Satellite GPS
   const detectGPSAndLoadStore = async (forceManual = false) => {
     try {
+      if (!forceManual && isManualAddressRef.current) return;
+      if (forceManual) {
+        isManualAddressRef.current = false;
+      }
+
       if (Platform.OS === 'web') {
         if (typeof navigator !== 'undefined' && navigator.geolocation) {
           navigator.geolocation.getCurrentPosition(
             (pos) => {
               gpsFetchedRef.current = true;
+              custLatRef.current = pos.coords.latitude;
+              custLngRef.current = pos.coords.longitude;
               setCustLat(pos.coords.latitude);
               setCustLng(pos.coords.longitude);
               loadStoreConfig(pos.coords.latitude, pos.coords.longitude);
             },
             () => fallbackToNetworkLocation(forceManual),
-            { enableHighAccuracy: true, timeout: 7000, maximumAge: 10000 }
+            { enableHighAccuracy: true, timeout: 6000, maximumAge: 15000 }
           );
         } else {
           fallbackToNetworkLocation(forceManual);
         }
       } else {
+        let enabled = await Location.hasServicesEnabledAsync().catch(() => true);
+        if (!enabled && forceManual) {
+          return Alert.alert("📍 Location Service Off", "Please enable GPS in device settings.");
+        }
+
         let { status } = await Location.requestForegroundPermissionsAsync().catch(() => ({ status: 'denied' }));
         
         if (status === 'granted') {
-          let loc = await Location.getCurrentPositionAsync({ 
-            accuracy: Location.Accuracy.High,
-            timeout: 10000
+          let fastLoc = await Location.getLastKnownPositionAsync().catch(() => null);
+          if (fastLoc?.coords && (!isManualAddressRef.current || forceManual)) {
+            gpsFetchedRef.current = true;
+            custLatRef.current = fastLoc.coords.latitude;
+            custLngRef.current = fastLoc.coords.longitude;
+            setCustLat(fastLoc.coords.latitude);
+            setCustLng(fastLoc.coords.longitude);
+            loadStoreConfig(fastLoc.coords.latitude, fastLoc.coords.longitude);
+          }
+
+          let liveLoc = await Location.getCurrentPositionAsync({ 
+            accuracy: Location.Accuracy.Balanced,
+            timeout: 6000
           }).catch(() => null);
 
-          if (loc?.coords) {
+          if (liveLoc?.coords && (!isManualAddressRef.current || forceManual)) {
             gpsFetchedRef.current = true;
-            setCustLat(loc.coords.latitude);
-            setCustLng(loc.coords.longitude);
-            loadStoreConfig(loc.coords.latitude, loc.coords.longitude);
-            if (forceManual) Alert.alert("📍 Location Updated", "Refreshed via High Accuracy GPS!");
+            custLatRef.current = liveLoc.coords.latitude;
+            custLngRef.current = liveLoc.coords.longitude;
+            setCustLat(liveLoc.coords.latitude);
+            setCustLng(liveLoc.coords.longitude);
+            loadStoreConfig(liveLoc.coords.latitude, liveLoc.coords.longitude);
+            if (forceManual) Alert.alert("📍 Live GPS", "Phone satellite location updated!");
             return;
           }
+          if (fastLoc?.coords) return;
         }
 
         if (forceManual) {
           Alert.alert(
             "📍 GPS Permission Required", 
-            "Door-step accurate delivery distance ke liye settings me jakar location allow karein, ya neeche apna sahi Address likhein.",
+            "Please allow location permissions in device settings to verify delivery distance.",
             [
               { text: "Cancel", style: "cancel" },
-              { text: "Open Settings", onPress: () => Linking.openSettings() }
+              { text: "Settings", onPress: () => Linking.openSettings() }
             ]
           );
         }
@@ -427,10 +458,13 @@ export default function CustomerApp() {
   };
 
   const fallbackToNetworkLocation = async (showPrompt = false) => {
+    if (isManualAddressRef.current && !showPrompt) return;
     gpsFetchedRef.current = true;
     try {
       let res = await fetch("https://ipapi.co/json/").then(r => r.json());
       if (res && res.latitude && res.longitude) {
+        custLatRef.current = res.latitude;
+        custLngRef.current = res.longitude;
         setCustLat(res.latitude);
         setCustLng(res.longitude);
         loadStoreConfig(res.latitude, res.longitude);
@@ -438,7 +472,7 @@ export default function CustomerApp() {
       }
     } catch (err) {}
 
-    loadStoreConfig(custLat, custLng);
+    loadStoreConfig(custLatRef.current, custLngRef.current);
   };
 
   const loadStoreConfig = (lat, lng) => {
@@ -502,7 +536,7 @@ export default function CustomerApp() {
   const updateCartQty = (prod, delta) => {
     if (!prod || !prod.id) return;
     if (prod.inStock === false) {
-      return Alert.alert("Out of Stock", "Sorry, this item is out of stock.");
+      return Alert.alert("Out of Stock", "Sorry, this item is currently out of stock.");
     }
     let pKey = prod.id;
     let priceVal = Number(prod.price || 0);
@@ -545,10 +579,9 @@ export default function CustomerApp() {
   if (deliveryType === 'Express') deliveryFee += expExtra;
   let finalTotal = subtotal + (subtotal > 0 ? deliveryFee : 0);
 
-  // 🚀 Fresh Login Token Trigger
   const handleLogin = async () => {
     let cleanPh = (loginPhoneInput || '').replace(/[^0-9]/g, '').trim();
-    if (cleanPh.length !== 10) return Alert.alert("Invalid Phone", "Please enter a valid 10-digit mobile number!");
+    if (cleanPh.length !== 10) return Alert.alert("Invalid Phone", "Please enter a valid 10-digit mobile number.");
     
     setCustPhone(cleanPh);
     setIsLoggedIn(true);
@@ -566,7 +599,6 @@ export default function CustomerApp() {
         if (userData.addr) {
           setCustAddr(userData.addr);
           await AsyncStorage.setItem('manor_cust_addr', userData.addr);
-          fetchLocationFromAddress(userData.addr);
         }
         if (userData.addresses && Array.isArray(userData.addresses)) {
           setSavedAddresses(userData.addresses);
@@ -575,7 +607,7 @@ export default function CustomerApp() {
       }
     }).catch(() => {});
 
-    Alert.alert("Welcome", "Logged in successfully! Your orders and account history are restored.");
+    Alert.alert("Welcome", "Logged in successfully!");
   };
 
   const fetchCustomerOrders = (phone) => {
@@ -600,13 +632,13 @@ export default function CustomerApp() {
     setIsLoggedIn(false);
     setCart({});
     setActiveTab('shop');
-    Alert.alert("Logged Out", "Your session has been cleared.");
+    Alert.alert("Logged Out", "You have been logged out successfully.");
   };
 
   const handleDeleteAccount = () => {
     Alert.alert(
       "Delete Account",
-      "Are you sure you want to delete your account and saved addresses?",
+      "Are you sure you want to delete your account and saved addresses? This action cannot be undone.",
       [
         { text: "Cancel", style: "cancel" },
         { text: "Yes, Delete", onPress: handleLogout, style: "destructive" }
@@ -617,7 +649,7 @@ export default function CustomerApp() {
   const handleExitApp = () => {
     Alert.alert(
       "Exit App",
-      "Do you want to exit the application?",
+      "Are you sure you want to close Manor Mart?",
       [
         { text: "Cancel", style: "cancel" },
         { text: "Exit", onPress: () => {
@@ -648,11 +680,11 @@ export default function CustomerApp() {
         Alert.alert(
           "Order Cancelled", 
           paymentModeVal === 'Online' && !currentStatus?.includes('Payment Pending')
-            ? "Your order has been cancelled. Your refund will be credited to the source payment account within 5 to 7 business days."
+            ? "Your order has been cancelled. For online prepaid orders, the refund will be credited back to your original payment method within 5 to 7 business days."
             : "Your order has been cancelled successfully."
         );
       }).catch(() => {
-        Alert.alert("Error", "Network problem, please try again.");
+        Alert.alert("Error", "Network error. Please try again.");
       });
     } else {
       setCancelStepOrder(orderId);
@@ -675,7 +707,7 @@ export default function CustomerApp() {
 
   const saveCurrentAddress = async () => {
     let cleanAddr = sanitizeInput(custAddr);
-    if (!cleanAddr) return Alert.alert("Required", "Please type an address to save!");
+    if (!cleanAddr) return Alert.alert("Required", "Please enter an address to save.");
     let updatedAddrs = [...savedAddresses];
     if (!updatedAddrs.includes(cleanAddr)) {
       updatedAddrs.push(cleanAddr);
@@ -688,46 +720,84 @@ export default function CustomerApp() {
           body: JSON.stringify(updatedAddrs)
         }).catch(() => {});
       }
-      Alert.alert("Saved", "Address added to your saved list!");
+      Alert.alert("Address Saved", "Delivery address added to your saved list!");
     }
     fetchLocationFromAddress(cleanAddr);
   };
 
+  const deleteSavedAddress = async (indexToDelete) => {
+    Alert.alert(
+      "Delete Address",
+      "Are you sure you want to remove this address from your saved list?",
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "Delete", 
+          style: "destructive",
+          onPress: async () => {
+            let updated = savedAddresses.filter((_, idx) => idx !== indexToDelete);
+            setSavedAddresses(updated);
+            await AsyncStorage.setItem('manor_cust_addrs_list', JSON.stringify(updated));
+            if (custPhone) {
+              fetch(db + `customers/${custPhone}/addresses.json`, {
+                method: 'PUT',
+                body: JSON.stringify(updated)
+              }).catch(() => {});
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const saveProfileDetails = async () => {
+    let cleanName = sanitizeInput(custName);
+    if (!cleanName) return Alert.alert("Required", "Please enter your name.");
+    await AsyncStorage.setItem('manor_cust_name', cleanName);
+    if (custPhone) {
+      fetch(db + `customers/${custPhone}.json`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: cleanName })
+      }).catch(() => {});
+    }
+    Alert.alert("Profile Updated", "Your profile details have been saved successfully!");
+  };
+
   const placeOrder = async () => {
     if (storeSettings.storeOpen === false) {
-      return Alert.alert("Store Closed", "Store is currently closed.");
+      return Alert.alert("Store Closed", "Store is currently closed. New orders are temporarily suspended.");
     }
 
     let cleanName = sanitizeInput(custName);
     let cleanAddr = sanitizeInput(custAddr);
 
-    if (!cleanName) return Alert.alert("Name Required", "Please enter your full name!");
-    if (!cleanAddr) return Alert.alert("Address Required", "Please enter your delivery address!");
-    if (!custPhone || custPhone.length !== 10) return Alert.alert("Phone Required", "Please verify your 10-digit phone number.");
+    if (!cleanName) return Alert.alert("Name Required", "Please enter your full name in Profile or Checkout.");
+    if (!cleanAddr) return Alert.alert("Address Required", "Please enter your delivery address.");
+    if (!custPhone || custPhone.length !== 10) return Alert.alert("Phone Required", "Please enter a valid 10-digit mobile number.");
 
     if (!inRange) {
       return Alert.alert(
         "🚫 Outside Delivery Zone", 
-        `Delivery is restricted to ${storeSettings.radiusKm} KM from store hub. You are currently ${distanceKm} KM away.`
+        `Delivery is strictly restricted to ${storeSettings.radiusKm} KM from store hub. You are currently ${distanceKm} KM away.`
       );
     }
 
     let minOrd = Number(storeSettings.minOrd || 0);
     if (minOrd > 0 && subtotal < minOrd) {
-      return Alert.alert("Minimum Order Limit", `Minimum order amount is ₹${minOrd}.`);
+      return Alert.alert("Minimum Order Limit", `Minimum order amount required is ₹${minOrd}.`);
     }
 
-    let orderId = 'ord_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
-    let initialStatus = paymentMode === 'Online' ? '⏳ Payment Pending' : 'Order Successful';
     let currentTimestamp = Date.now();
+    let orderId = 'ord_' + currentTimestamp + '_' + Math.floor(Math.random() * 1000);
+    let initialStatus = paymentMode === 'Online' ? '⏳ Payment Pending' : 'Order Successful';
 
     let orderObj = {
       id: orderId, 
       name: cleanName, 
       phone: custPhone, 
       addr: cleanAddr,
-      lat: custLat, 
-      lng: custLng, 
+      lat: custLatRef.current, 
+      lng: custLngRef.current, 
       distance: distanceKm, 
       items: cart,
       subtotal, 
@@ -763,7 +833,7 @@ export default function CustomerApp() {
         let targetUrl = `${customBaseUrl}?amount=${finalTotal}&order_id=${orderId}&app_scheme=manormart`;
         
         Linking.openURL(targetUrl).catch(() => {
-          Alert.alert("Browser Error", "Unable to open payment checkout page.");
+          Alert.alert("Error", "Unable to open payment checkout page.");
         });
       } else {
         setActiveTab('orders');
@@ -771,7 +841,7 @@ export default function CustomerApp() {
         Alert.alert("Order Placed", `Order #${orderId.slice(-6)} placed successfully!`);
       }
     }).catch(() => {
-      Alert.alert("Error", "Could not process order. Please check your network.");
+      Alert.alert("Network Error", "Unable to place order. Please check your internet connection.");
     });
   };
 
@@ -786,15 +856,15 @@ export default function CustomerApp() {
         <View style={{marginVertical: 6, backgroundColor: '#fff3e0', padding: 8, borderRadius: 6, borderWidth: 1, borderColor: '#ffb74d', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'}}>
           <View>
             <Text style={{fontSize: 11, color: '#e65100', fontWeight: 'bold'}}>⏳ Awaiting Payment Completion</Text>
-            <Text style={{fontSize: 9.5, color: '#666', marginTop: 2}}>Tap check if payment is done:</Text>
+            <Text style={{fontSize: 9.5, color: '#666', marginTop: 2}}>Tap check if payment completed:</Text>
           </View>
           <TouchableOpacity onPress={() => {
             fetch(db + `orders/${orderId}.json`).then(r => r.json()).then(ord => {
               if (ord && ord.deliveryStatus === 'Order Successful') {
-                Alert.alert("Verified!", "Payment confirmed successfully!");
+                Alert.alert("Verified", "Payment verified and order confirmed!");
                 fetchCustomerOrders(custPhone);
               } else {
-                Alert.alert("Pending", "Payment has not been confirmed yet.");
+                Alert.alert("Pending", "Payment is still unverified. Please try again in a few moments.");
               }
             });
           }} style={{backgroundColor: '#e65100', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 5}}>
@@ -953,7 +1023,7 @@ export default function CustomerApp() {
           <View style={{flex: 1, paddingRight: 6}}>
             <Text style={s.ht} numberOfLines={1}>🛒 {storeSettings.store}</Text>
             <Text style={{fontSize: 10, color: '#ffd54f', fontWeight: 'bold', marginTop: 2}} numberOfLines={1}>
-              📍 Delivery to: {custAddr ? custAddr : 'Enter address in Profile/Cart'}
+              📍 Delivery to: {custAddr ? custAddr : 'Select address in Profile/Cart'}
             </Text>
           </View>
           <View style={{flexDirection: 'row', alignItems: 'center'}}>
@@ -1222,69 +1292,129 @@ export default function CustomerApp() {
           </View>
         )}
 
+        {/* --- REORGANIZED & CLEAN PROFILE SETTINGS TAB --- */}
         {activeTab === 'profile' && (
-          <View style={s.card}>
-            <Text style={s.secTitle}>⚙️ Customer Profile & Saved Addresses</Text>
-            <Text style={s.lbl}>Your Name:</Text>
-            <TextInput style={s.i} value={custName} onChangeText={v => setCustName(sanitizeInput(v))} placeholder="Enter Full Name" />
-            <Text style={s.lbl}>Mobile Number (Fixed):</Text>
-            <TextInput style={[s.i, {backgroundColor: '#f5f5f5'}]} value={custPhone} editable={false} />
+          <View style={{width: '100%'}}>
             
-            <Text style={s.lbl}>Delivery Address (Type area to auto-detect location):</Text>
-            <TextInput 
-              style={[s.i, {height: 55}]} 
-              value={custAddr} 
-              onChangeText={v => setCustAddr(sanitizeInput(v))} 
-              onBlur={() => fetchLocationFromAddress(custAddr)}
-              placeholder="House No, Landmark, Area (e.g. Mastan Naka)" 
-              multiline={true} 
-            />
-            
-            <TouchableOpacity style={{backgroundColor: '#7b1fa2', padding: 7, borderRadius: 5, alignItems: 'center', marginVertical: 3}} onPress={saveCurrentAddress}>
-              <Text style={{color: '#fff', fontSize: 10.5, fontWeight: 'bold'}}>📍 Save This Address</Text>
-            </TouchableOpacity>
+            {/* SECTION 1: PERSONAL INFORMATION */}
+            <View style={s.card}>
+              <Text style={s.secTitle}>👤 Personal Information</Text>
+              
+              <Text style={s.lbl}>Your Name:</Text>
+              <TextInput 
+                style={s.i} 
+                value={custName} 
+                onChangeText={v => setCustName(sanitizeInput(v))} 
+                placeholder="Enter Full Name" 
+              />
+              
+              <Text style={s.lbl}>Mobile Number (Registered):</Text>
+              <TextInput 
+                style={[s.i, {backgroundColor: '#f5f5f5', color: '#666'}]} 
+                value={custPhone} 
+                editable={false} 
+              />
+              
+              <TouchableOpacity 
+                style={[s.btn, {backgroundColor: '#6a1b9a', marginTop: 8, padding: 9}]} 
+                onPress={saveProfileDetails}
+              >
+                <Text style={s.btnTxt}>💾 Save Profile Details</Text>
+              </TouchableOpacity>
+            </View>
 
-            {savedAddresses.length > 0 && (
-              <View style={{marginTop: 5}}>
-                <Text style={{fontSize: 10, fontWeight: 'bold', color: '#4a148c'}}>Saved Addresses (Tap to select):</Text>
-                {savedAddresses.map((ad, i) => (
-                  <TouchableOpacity key={i} onPress={() => { setCustAddr(ad); fetchLocationFromAddress(ad); }} style={{backgroundColor: '#f3e5f5', padding: 5, borderRadius: 4, marginVertical: 2}}>
-                    <Text style={{fontSize: 9.5, color: '#333'}}>{ad}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
+            {/* SECTION 2: DELIVERY ADDRESSES */}
+            <View style={s.card}>
+              <Text style={s.secTitle}>📍 Delivery Addresses</Text>
+              
+              <Text style={s.lbl}>Delivery Address (Type area to check distance):</Text>
+              <TextInput 
+                style={[s.i, {height: 52}]} 
+                value={custAddr} 
+                onChangeText={v => setCustAddr(sanitizeInput(v))} 
+                onBlur={() => fetchLocationFromAddress(custAddr)}
+                placeholder="House No, Landmark, Area, Town (e.g. Palghar)" 
+                multiline={true} 
+              />
+              
+              <TouchableOpacity 
+                style={{backgroundColor: '#7b1fa2', padding: 8, borderRadius: 6, alignItems: 'center', marginTop: 4}} 
+                onPress={saveCurrentAddress}
+              >
+                <Text style={{color: '#fff', fontSize: 10.5, fontWeight: 'bold'}}>➕ Save This Address</Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity style={[s.btn, {backgroundColor: '#6a1b9a', marginTop: 8, padding: 10}]} onPress={async () => {
-              await AsyncStorage.setItem('manor_cust_name', custName);
-              await AsyncStorage.setItem('manor_cust_addr', custAddr);
-              fetchLocationFromAddress(custAddr);
-              if (custPhone) {
-                fetch(db + `customers/${custPhone}.json`, {
-                  method: 'PATCH',
-                  body: JSON.stringify({ name: custName, addr: custAddr })
-                }).catch(() => {});
-                if (myPushTokenRef.current) {
-                  saveCustomerPushToken(myPushTokenRef.current, custPhone);
-                }
-              }
-              Alert.alert("Success", "Profile updated successfully!");
-            }}><Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>💾 Save Profile</Text></TouchableOpacity>
+              {savedAddresses.length > 0 && (
+                <View style={{marginTop: 10, borderTopWidth: 1, borderColor: '#eee', paddingTop: 8}}>
+                  <Text style={{fontSize: 10, fontWeight: 'bold', color: '#4a148c', marginBottom: 4}}>
+                    Saved Addresses (Tap to select | ✕ to delete):
+                  </Text>
+                  {savedAddresses.map((ad, i) => (
+                    <View key={i} style={s.savedAddrRow}>
+                      <TouchableOpacity 
+                        onPress={() => { 
+                          setCustAddr(ad); 
+                          fetchLocationFromAddress(ad); 
+                        }} 
+                        style={{flex: 1, paddingRight: 6}}
+                      >
+                        <Text style={{fontSize: 10, color: '#222'}} numberOfLines={2}>📍 {ad}</Text>
+                      </TouchableOpacity>
+                      
+                      <TouchableOpacity 
+                        onPress={() => deleteSavedAddress(i)} 
+                        style={s.addrDeleteBtn}
+                      >
+                        <Text style={{color: '#fff', fontSize: 10, fontWeight: 'bold'}}>✕</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </View>
 
-            <View style={{marginTop: 15, backgroundColor: '#f3e5f5', padding: 10, borderRadius: 6}}>
-              <Text style={{fontSize: 11, fontWeight: 'bold', color: '#4a148c', marginBottom: 4}}>📜 Legal & Store Policies:</Text>
+            {/* SECTION 3: STORE POLICIES & LEGAL */}
+            <View style={s.card}>
+              <Text style={s.secTitle}>📜 Store Policies & Legal Terms</Text>
+              <Text style={{fontSize: 9.5, color: '#666', marginBottom: 6}}>
+                Review Manor Mart return, refund (5-7 days), and customer data protection policies.
+              </Text>
+              
               <TouchableOpacity onPress={() => setShowLegalModal(true)} style={s.policyInteractiveBtn}>
                 <Text style={{fontSize: 11, color: '#fff', fontWeight: 'bold', textAlign: 'center'}}>
-                  📄 View Terms, Privacy & Refund Policy (5-7 Days)
+                  📄 View Terms, Privacy & Refund Policy
                 </Text>
               </TouchableOpacity>
             </View>
 
-            <View style={{marginTop: 15, borderTopWidth: 1, borderColor: '#eee', paddingTop: 8}}>
-              <TouchableOpacity style={[s.btn, {backgroundColor: '#e65100', marginBottom: 6, padding: 10}]} onPress={handleLogout}><Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>🚪 Logout</Text></TouchableOpacity>
-              <TouchableOpacity style={[s.btn, {backgroundColor: '#d32f2f', marginBottom: 6, padding: 10}]} onPress={handleExitApp}><Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>🔴 Exit Application</Text></TouchableOpacity>
-              <TouchableOpacity style={[s.btn, {backgroundColor: '#c62828', padding: 10}]} onPress={handleDeleteAccount}><Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>⚠️ Delete My Account</Text></TouchableOpacity>
+            {/* SECTION 4: ACCOUNT ACTIONS (LOGOUT / EXIT / DELETE) */}
+            <View style={[s.card, {borderColor: '#ffcdd2'}]}>
+              <Text style={[s.secTitle, {color: '#c62828'}]}>🔒 Account Management</Text>
+              
+              <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 4}}>
+                <TouchableOpacity 
+                  style={[s.btn, {backgroundColor: '#e65100', flex: 1, marginRight: 4, padding: 9}]} 
+                  onPress={handleLogout}
+                >
+                  <Text style={s.btnTxt}>🚪 Logout</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={[s.btn, {backgroundColor: '#555', flex: 1, marginLeft: 4, padding: 9}]} 
+                  onPress={handleExitApp}
+                >
+                  <Text style={s.btnTxt}>🔴 Exit App</Text>
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity 
+                style={[s.btn, {backgroundColor: '#c62828', marginTop: 8, padding: 9}]} 
+                onPress={handleDeleteAccount}
+              >
+                <Text style={s.btnTxt}>⚠️ Delete My Account</Text>
+              </TouchableOpacity>
             </View>
+
           </View>
         )}
       </ScrollView>
@@ -1344,10 +1474,10 @@ export default function CustomerApp() {
               <Text style={s.lbl}>Mobile Number:</Text>
               <TextInput style={[s.i, {backgroundColor: '#f5f5f5'}]} value={custPhone} editable={false} />
               
-              <Text style={s.lbl}>Delivery Address (Type area to auto-check distance):</Text>
+              <Text style={s.lbl}>Delivery Address (Type area to check distance):</Text>
               <TextInput 
                 style={[s.i, {height: 55}]} 
-                placeholder="House No, Landmark, Area (e.g. Mastan Naka)" 
+                placeholder="House No, Landmark, Area, Town (e.g. Palghar)" 
                 multiline={true} 
                 value={custAddr} 
                 onChangeText={v => setCustAddr(v)} 
@@ -1455,6 +1585,8 @@ const s = StyleSheet.create({
   btnTxt: { color: '#fff', fontWeight: 'bold', fontSize: 11.5 },
   catChip: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, backgroundColor: '#f3e5f5', marginRight: 5, marginBottom: 5, borderWidth: 1, borderColor: '#ce93d8' },
   catChipAct: { backgroundColor: '#6a1b9a', borderColor: '#6a1b9a' },
+  savedAddrRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 6, borderRadius: 6, marginVertical: 3, justifyContent: 'space-between' },
+  addrDeleteBtn: { backgroundColor: '#c62828', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 15, width: '100%' },
   modalCard: { width: '100%', maxWidth: 350, backgroundColor: '#fff', padding: 15, borderRadius: 14, elevation: 8 },
   modalTitle: { fontSize: 16, fontWeight: 'bold', color: '#4a148c' },
@@ -1464,6 +1596,6 @@ const s = StyleSheet.create({
   policyText: { fontSize: 11, color: '#333', lineHeight: 16, marginBottom: 3 },
   policyBottomBar: { position: 'absolute', bottom: 60, left: 15, right: 15, zIndex: 999 },
   policyCloseBtn: { backgroundColor: '#6a1b9a', paddingVertical: 12, borderRadius: 10, alignItems: 'center', elevation: 6 },
-  policyInteractiveBtn: { backgroundColor: '#6a1b9a', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, marginVertical: 6, alignItems: 'center' },
+  policyInteractiveBtn: { backgroundColor: '#6a1b9a', paddingVertical: 9, paddingHorizontal: 12, borderRadius: 8, marginVertical: 4, alignItems: 'center' },
   policyInteractiveBtnSec: { backgroundColor: '#7b1fa2', paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, marginTop: 10, alignItems: 'center' }
 });
