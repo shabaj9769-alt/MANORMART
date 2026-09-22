@@ -4,7 +4,7 @@
     "slug": "manormart",
     "owner": "amjad93614s-team",
     "scheme": "manormart",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -36,7 +36,7 @@
     },
     "android": {
       "package": "com.shabaj.manormartapp",
-      "versionCode": 4,
+      "versionCode": 5,
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
