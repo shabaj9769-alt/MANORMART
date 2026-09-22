@@ -55,6 +55,7 @@ export default function CustomerApp() {
   const [custLng, setCustLng] = useState(72.9097);
   const [distanceKm, setDistanceKm] = useState(0);
   const [inRange, setInRange] = useState(true);
+  const [gpsStatus, setGpsStatus] = useState('Locating...');
 
   const [custName, setCustName] = useState('');
   const [custPhone, setCustPhone] = useState('');
@@ -76,7 +77,6 @@ export default function CustomerApp() {
   const myPushTokenRef = useRef('');
   const custLatRef = useRef(19.7244);
   const custLngRef = useRef(72.9097);
-  const isManualAddressRef = useRef(false);
 
   useEffect(() => {
     checkInitialTermsAgreement();
@@ -134,15 +134,6 @@ export default function CustomerApp() {
       }
     }).catch(() => {});
 
-    const notifSub = Notifications.addNotificationResponseReceivedListener(response => {
-      const data = response.notification.request.content.data;
-      if (data?.url) {
-        Linking.openURL(data.url).catch(() => {});
-      } else {
-        setActiveTab('shop');
-      }
-    });
-
     const autoRefreshInterval = setInterval(() => {
       fetch(db + ".json").then(r => r.json()).then(data => {
         if (!data) return;
@@ -165,7 +156,6 @@ export default function CustomerApp() {
     return () => {
       clearInterval(autoRefreshInterval);
       if (sub && sub.remove) sub.remove();
-      if (notifSub && notifSub.remove) notifSub.remove();
     };
   }, [custPhone]);
 
@@ -353,39 +343,10 @@ export default function CustomerApp() {
     } catch(e) {}
   };
 
-  const fetchLocationFromAddress = async (addressText) => {
-    if (!addressText || addressText.trim().length < 3) return;
-    try {
-      isManualAddressRef.current = true;
-      let clean = addressText.trim();
-      let queryStr = clean;
-      if (!queryStr.toLowerCase().includes('maharashtra')) {
-        queryStr += ', Maharashtra, India';
-      }
-      let query = encodeURIComponent(queryStr);
-      let res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}`, {
-        headers: { 'User-Agent': 'ManorMartApp/3.0' }
-      });
-      let data = await res.json();
-      if (data && data.length > 0) {
-        let lat = parseFloat(data[0].lat);
-        let lng = parseFloat(data[0].lon);
-        custLatRef.current = lat;
-        custLngRef.current = lng;
-        setCustLat(lat);
-        setCustLng(lng);
-        calcGeoFence(lat, lng, storeSettings.hubLat, storeSettings.hubLng, storeSettings.radiusKm);
-      }
-    } catch (e) {}
-  };
-
   const detectGPSAndLoadStore = async (forceManual = false) => {
     try {
-      if (!forceManual && isManualAddressRef.current) return;
-      if (forceManual) {
-        isManualAddressRef.current = false;
-      }
-
+      setGpsStatus('Fetching GPS...');
+      
       if (Platform.OS === 'web') {
         if (typeof navigator !== 'undefined' && navigator.geolocation) {
           navigator.geolocation.getCurrentPosition(
@@ -395,17 +356,19 @@ export default function CustomerApp() {
               custLngRef.current = pos.coords.longitude;
               setCustLat(pos.coords.latitude);
               setCustLng(pos.coords.longitude);
+              setGpsStatus('Active');
               loadStoreConfig(pos.coords.latitude, pos.coords.longitude);
             },
-            () => fallbackToNetworkLocation(forceManual),
+            () => fallbackToNetworkLocation(),
             { enableHighAccuracy: true, timeout: 6000, maximumAge: 15000 }
           );
         } else {
-          fallbackToNetworkLocation(forceManual);
+          fallbackToNetworkLocation();
         }
       } else {
         let enabled = await Location.hasServicesEnabledAsync().catch(() => true);
         if (!enabled && forceManual) {
+          setGpsStatus('GPS Off');
           return Alert.alert("📍 Location Service Off", "Please enable GPS in device settings.");
         }
 
@@ -413,12 +376,13 @@ export default function CustomerApp() {
         
         if (status === 'granted') {
           let fastLoc = await Location.getLastKnownPositionAsync().catch(() => null);
-          if (fastLoc?.coords && (!isManualAddressRef.current || forceManual)) {
+          if (fastLoc?.coords) {
             gpsFetchedRef.current = true;
             custLatRef.current = fastLoc.coords.latitude;
             custLngRef.current = fastLoc.coords.longitude;
             setCustLat(fastLoc.coords.latitude);
             setCustLng(fastLoc.coords.longitude);
+            setGpsStatus('Active');
             loadStoreConfig(fastLoc.coords.latitude, fastLoc.coords.longitude);
           }
 
@@ -427,14 +391,15 @@ export default function CustomerApp() {
             timeout: 6000
           }).catch(() => null);
 
-          if (liveLoc?.coords && (!isManualAddressRef.current || forceManual)) {
+          if (liveLoc?.coords) {
             gpsFetchedRef.current = true;
             custLatRef.current = liveLoc.coords.latitude;
             custLngRef.current = liveLoc.coords.longitude;
             setCustLat(liveLoc.coords.latitude);
             setCustLng(liveLoc.coords.longitude);
+            setGpsStatus('Active');
             loadStoreConfig(liveLoc.coords.latitude, liveLoc.coords.longitude);
-            if (forceManual) Alert.alert("📍 Live GPS", "Phone satellite location updated!");
+            if (forceManual) Alert.alert("📍 Live GPS", "Phone location updated successfully!");
             return;
           }
           if (fastLoc?.coords) return;
@@ -443,35 +408,23 @@ export default function CustomerApp() {
         if (forceManual) {
           Alert.alert(
             "📍 GPS Permission Required", 
-            "Please allow location permissions in device settings to verify delivery distance.",
+            "Please allow location permissions to check delivery distance.",
             [
               { text: "Cancel", style: "cancel" },
               { text: "Settings", onPress: () => Linking.openSettings() }
             ]
           );
         }
-        await fallbackToNetworkLocation(false);
+        await fallbackToNetworkLocation();
       }
     } catch (e) {
-      fallbackToNetworkLocation(forceManual);
+      fallbackToNetworkLocation();
     }
   };
 
-  const fallbackToNetworkLocation = async (showPrompt = false) => {
-    if (isManualAddressRef.current && !showPrompt) return;
+  const fallbackToNetworkLocation = async () => {
     gpsFetchedRef.current = true;
-    try {
-      let res = await fetch("https://ipapi.co/json/").then(r => r.json());
-      if (res && res.latitude && res.longitude) {
-        custLatRef.current = res.latitude;
-        custLngRef.current = res.longitude;
-        setCustLat(res.latitude);
-        setCustLng(res.longitude);
-        loadStoreConfig(res.latitude, res.longitude);
-        return;
-      }
-    } catch (err) {}
-
+    setGpsStatus('Network');
     loadStoreConfig(custLatRef.current, custLngRef.current);
   };
 
@@ -722,7 +675,6 @@ export default function CustomerApp() {
       }
       Alert.alert("Address Saved", "Delivery address added to your saved list!");
     }
-    fetchLocationFromAddress(cleanAddr);
   };
 
   const deleteSavedAddress = async (indexToDelete) => {
@@ -775,10 +727,11 @@ export default function CustomerApp() {
     if (!cleanAddr) return Alert.alert("Address Required", "Please enter your delivery address.");
     if (!custPhone || custPhone.length !== 10) return Alert.alert("Phone Required", "Please enter a valid 10-digit mobile number.");
 
+    // STRICT CHECK AT THE FINAL STEP
     if (!inRange) {
       return Alert.alert(
-        "🚫 Outside Delivery Zone", 
-        `Delivery is strictly restricted to ${storeSettings.radiusKm} KM from store hub. You are currently ${distanceKm} KM away.`
+        "Out of Delivery Area", 
+        `Sorry! We currently deliver within ${storeSettings.radiusKm} KM of our store hub. Your device GPS shows you are ${distanceKm} KM away.`
       );
     }
 
@@ -1023,16 +976,16 @@ export default function CustomerApp() {
           <View style={{flex: 1, paddingRight: 6}}>
             <Text style={s.ht} numberOfLines={1}>🛒 {storeSettings.store}</Text>
             <Text style={{fontSize: 10, color: '#ffd54f', fontWeight: 'bold', marginTop: 2}} numberOfLines={1}>
-              📍 Delivery to: {custAddr ? custAddr : 'Select address in Profile/Cart'}
+              📍 Delivery to: {custAddr ? custAddr : 'Not Set'}
             </Text>
           </View>
           <View style={{flexDirection: 'row', alignItems: 'center'}}>
             <TouchableOpacity onPress={() => detectGPSAndLoadStore(true)} style={{backgroundColor: '#7b1fa2', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, marginRight: 6}}>
               <Text style={{fontSize: 9.5, color: '#fff', fontWeight: 'bold'}}>🔄 GPS</Text>
             </TouchableOpacity>
-            <View style={{backgroundColor: inRange ? '#2e7d32' : '#c62828', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6}}>
+            <View style={{backgroundColor: '#2e7d32', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6}}>
               <Text style={{fontSize: 9.5, color: '#fff', fontWeight: 'bold'}} numberOfLines={1}>
-                {inRange ? `Inside (${distanceKm} KM)` : `Outside (${distanceKm} KM)`}
+                {gpsStatus}
               </Text>
             </View>
           </View>
@@ -1115,14 +1068,6 @@ export default function CustomerApp() {
               </View>
             ) : null}
 
-            {!inRange && (
-              <View style={s.warningBox}>
-                <Text style={{fontSize: 11, color: '#c62828', fontWeight: 'bold', textAlign: 'center'}}>
-                  🚫 You are {distanceKm} KM away from store. Admin delivery limit is {storeSettings.radiusKm} KM. Orders are disabled.
-                </Text>
-              </View>
-            )}
-
             {(selectedCat || searchQuery) ? (
               <View style={{width: '100%'}}>
                 <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8}}>
@@ -1174,13 +1119,8 @@ export default function CustomerApp() {
                               </View>
                             ) : cartQty === 0 ? (
                               <TouchableOpacity 
-                                onPress={() => {
-                                  if (!inRange) {
-                                    return Alert.alert("Outside Delivery Zone", `Delivery is restricted to ${storeSettings.radiusKm} KM. You are ${distanceKm} KM away.`);
-                                  }
-                                  updateCartQty(pr, 1);
-                                }} 
-                                style={[s.gridAddBtn, !inRange && {backgroundColor: '#b0bec5'}]}
+                                onPress={() => updateCartQty(pr, 1)} 
+                                style={s.gridAddBtn}
                               >
                                 <Text style={{color: '#fff', fontSize: 11, fontWeight: 'bold'}}>ADD +</Text>
                               </TouchableOpacity>
@@ -1327,13 +1267,12 @@ export default function CustomerApp() {
             <View style={s.card}>
               <Text style={s.secTitle}>📍 Delivery Addresses</Text>
               
-              <Text style={s.lbl}>Delivery Address (Type area to check distance):</Text>
+              <Text style={s.lbl}>Delivery Address:</Text>
               <TextInput 
                 style={[s.i, {height: 52}]} 
                 value={custAddr} 
                 onChangeText={v => setCustAddr(sanitizeInput(v))} 
-                onBlur={() => fetchLocationFromAddress(custAddr)}
-                placeholder="House No, Landmark, Area, Town (e.g. Palghar)" 
+                placeholder="House No, Landmark, Area, Town" 
                 multiline={true} 
               />
               
@@ -1352,10 +1291,7 @@ export default function CustomerApp() {
                   {savedAddresses.map((ad, i) => (
                     <View key={i} style={s.savedAddrRow}>
                       <TouchableOpacity 
-                        onPress={() => { 
-                          setCustAddr(ad); 
-                          fetchLocationFromAddress(ad); 
-                        }} 
+                        onPress={() => setCustAddr(ad)} 
                         style={{flex: 1, paddingRight: 6}}
                       >
                         <Text style={{fontSize: 10, color: '#222'}} numberOfLines={2}>📍 {ad}</Text>
@@ -1474,14 +1410,13 @@ export default function CustomerApp() {
               <Text style={s.lbl}>Mobile Number:</Text>
               <TextInput style={[s.i, {backgroundColor: '#f5f5f5'}]} value={custPhone} editable={false} />
               
-              <Text style={s.lbl}>Delivery Address (Type area to check distance):</Text>
+              <Text style={s.lbl}>Delivery Address:</Text>
               <TextInput 
                 style={[s.i, {height: 55}]} 
-                placeholder="House No, Landmark, Area, Town (e.g. Palghar)" 
+                placeholder="House No, Landmark, Area, Town" 
                 multiline={true} 
                 value={custAddr} 
                 onChangeText={v => setCustAddr(v)} 
-                onBlur={() => fetchLocationFromAddress(custAddr)}
               />
 
               {savedAddresses.length > 0 && (
@@ -1489,7 +1424,7 @@ export default function CustomerApp() {
                   <Text style={{fontSize: 9.5, fontWeight: 'bold', color: '#6a1b9a'}}>Quick Select Saved Address:</Text>
                   <ScrollView horizontal={true} showsHorizontalScrollIndicator={false} style={{marginTop: 2}}>
                     {savedAddresses.map((ad, i) => (
-                      <TouchableOpacity key={i} onPress={() => { setCustAddr(ad); fetchLocationFromAddress(ad); }} style={{backgroundColor: '#f3e5f5', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4, marginRight: 4}}>
+                      <TouchableOpacity key={i} onPress={() => setCustAddr(ad)} style={{backgroundColor: '#f3e5f5', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4, marginRight: 4}}>
                         <Text style={{fontSize: 9, color: '#4a148c'}}>{ad}</Text>
                       </TouchableOpacity>
                     ))}
@@ -1527,13 +1462,11 @@ export default function CustomerApp() {
               </View>
 
               <TouchableOpacity 
-                style={[s.btn, {marginTop: 12, backgroundColor: inRange ? '#6a1b9a' : '#c62828', padding: 10}]} 
+                style={[s.btn, {marginTop: 12, backgroundColor: '#6a1b9a', padding: 10}]} 
                 onPress={placeOrder}
               >
-                <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5}}>
-                  {inRange 
-                    ? (paymentMode === 'Online' ? `Pay ₹${finalTotal} via Razorpay & Place Order` : `Place COD Order (₹${finalTotal})`) 
-                    : `🚫 Outside Delivery Zone (${distanceKm} KM / Limit ${storeSettings.radiusKm} KM)`}
+                <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5, textAlign: 'center'}}>
+                  {paymentMode === 'Online' ? `Pay ₹${finalTotal} & Place Order` : `Place COD Order (₹${finalTotal})`}
                 </Text>
               </TouchableOpacity>
             </View>
