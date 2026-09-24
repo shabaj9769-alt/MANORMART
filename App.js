@@ -16,6 +16,8 @@ const db = "https://manorbiryani-default-rtdb.firebaseio.com/";
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
   }),
@@ -77,86 +79,78 @@ export default function CustomerApp() {
   const myPushTokenRef = useRef('');
   const custLatRef = useRef(19.7244);
   const custLngRef = useRef(72.9097);
+  const custPhoneRef = useRef('');
+  const placingRef = useRef(false);
+  const [placing, setPlacing] = useState(false);
 
+  // Always keep the latest phone in a ref so long-lived listeners never read a stale value
+  useEffect(() => {
+    custPhoneRef.current = custPhone;
+  }, [custPhone]);
+
+  // Geofence is derived from state: recalculates whenever GPS or hub settings change
+  useEffect(() => {
+    calcGeoFence(custLat, custLng, storeSettings.hubLat, storeSettings.hubLng, storeSettings.radiusKm);
+  }, [custLat, custLng, storeSettings.hubLat, storeSettings.hubLng, storeSettings.radiusKm]);
+
+  // If the cart becomes empty while the checkout modal is open, go back to the shop
+  useEffect(() => {
+    if (activeTab === 'cart' && Object.keys(cart || {}).length === 0) setActiveTab('shop');
+  }, [cart, activeTab]);
+
+  // One-time setup (mount only)
   useEffect(() => {
     checkInitialTermsAgreement();
     checkSavedCustomerSession();
     checkURLPaymentReturn();
-    registerForPushNotifications();
 
     if (!gpsFetchedRef.current) {
       detectGPSAndLoadStore(false);
     }
 
-    const handleDeepLink = async (event) => {
-      if (!event?.url) return;
+    const handleUrl = async (url) => {
+      if (!url) return;
       try {
-        let urlStr = event.url;
-        if (urlStr.includes('shop')) {
-          setActiveTab('shop');
-        } else if (urlStr.includes('orders')) {
-          let phone = custPhone || await AsyncStorage.getItem('manor_cust_phone');
-          if (phone) fetchCustomerOrders(phone);
-          setActiveTab('orders');
-        } else if (urlStr.includes('success') || urlStr.includes('razorpay_payment_id')) {
-          let pendingOrderId = await AsyncStorage.getItem('manor_pending_ord');
+        const getPhone = async () => custPhoneRef.current || (await AsyncStorage.getItem('manor_cust_phone'));
+        if (url.includes('success') || url.includes('razorpay_payment_id')) {
+          const pendingOrderId = await AsyncStorage.getItem('manor_pending_ord');
           if (pendingOrderId) {
             await verifyAndConfirmOrder(pendingOrderId);
           } else {
-            let phone = custPhone || await AsyncStorage.getItem('manor_cust_phone');
+            const phone = await getPhone();
             if (phone) fetchCustomerOrders(phone);
             setActiveTab('orders');
           }
+        } else if (url.includes('orders')) {
+          const phone = await getPhone();
+          if (phone) fetchCustomerOrders(phone);
+          setActiveTab('orders');
+        } else if (url.includes('shop')) {
+          setActiveTab('shop');
         }
       } catch (e) {}
     };
 
-    const sub = Linking.addEventListener('url', handleDeepLink);
+    const sub = Linking.addEventListener('url', (event) => handleUrl(event?.url));
+    Linking.getInitialURL().then(handleUrl).catch(() => {});
 
-    Linking.getInitialURL().then(async (url) => {
-      if (url) {
-        if (url.includes('shop')) {
-          setActiveTab('shop');
-        } else if (url.includes('orders')) {
-          let phone = custPhone || await AsyncStorage.getItem('manor_cust_phone');
-          if (phone) fetchCustomerOrders(phone);
-          setActiveTab('orders');
-        } else if (url.includes('success') || url.includes('razorpay_payment_id')) {
-          let pendingOrderId = await AsyncStorage.getItem('manor_pending_ord');
-          if (pendingOrderId) {
-            await verifyAndConfirmOrder(pendingOrderId);
-          } else {
-            let phone = custPhone || await AsyncStorage.getItem('manor_cust_phone');
-            if (phone) fetchCustomerOrders(phone);
-            setActiveTab('orders');
-          }
-        }
-      }
-    }).catch(() => {});
-
-    const autoRefreshInterval = setInterval(() => {
-      fetch(db + ".json").then(r => r.json()).then(data => {
-        if (!data) return;
-        if (data.settings) {
-          setStoreSettings(prev => {
-            const updated = { ...prev, ...data.settings };
-            calcGeoFence(custLatRef.current, custLngRef.current, updated.hubLat, updated.hubLng, updated.radiusKm);
-            return updated;
-          });
-        }
-        if (data.categories) setCategories(data.categories);
-        if (data.deliveryBoys) setDeliveryBoysList(data.deliveryBoys);
-      }).catch(() => {});
-
-      if (custPhone) {
-        fetchCustomerOrders(custPhone);
-      }
+    // Poll only the small nodes (settings / categories / deliveryBoys), not the whole DB
+    const storeRefreshInterval = setInterval(() => {
+      fetchStoreData().then(applyStoreData).catch(() => {});
     }, 6000);
 
     return () => {
-      clearInterval(autoRefreshInterval);
+      clearInterval(storeRefreshInterval);
       if (sub && sub.remove) sub.remove();
     };
+  }, []);
+
+  // Orders polling: restarts only when the logged-in phone changes
+  useEffect(() => {
+    if (!custPhone) return;
+    fetchCustomerOrders(custPhone);
+    const ordersInterval = setInterval(() => fetchCustomerOrders(custPhone), 6000);
+    return () => clearInterval(ordersInterval);
   }, [custPhone]);
 
   const registerForPushNotifications = async (phoneOverride = '') => {
@@ -189,7 +183,7 @@ export default function CustomerApp() {
 
         if (tokenData?.data) {
           myPushTokenRef.current = tokenData.data;
-          let activePhone = phoneOverride || custPhone || await AsyncStorage.getItem('manor_cust_phone');
+          let activePhone = phoneOverride || custPhoneRef.current || await AsyncStorage.getItem('manor_cust_phone');
           saveCustomerPushToken(tokenData.data, activePhone);
         }
       }
@@ -304,17 +298,19 @@ export default function CustomerApp() {
     } catch(e) {}
   };
 
+  // The app never marks an order as paid. Only the server (verify-payment / webhook) sets paymentVerified.
   const verifyAndConfirmOrder = async (orderId) => {
     try {
-      await fetch(db + `orders/${orderId}/deliveryStatus.json`, {
-        method: 'PUT',
-        body: JSON.stringify('Order Successful')
-      });
-      await AsyncStorage.removeItem('manor_pending_ord');
-      let phone = custPhone || await AsyncStorage.getItem('manor_cust_phone');
+      const verified = await fetch(db + `orders/${orderId}/paymentVerified.json`).then(r => r.json());
+      let phone = custPhoneRef.current || await AsyncStorage.getItem('manor_cust_phone');
       if (phone) fetchCustomerOrders(phone);
       setActiveTab('orders');
-      Alert.alert("🎉 Payment Successful", "Payment verified and order confirmed successfully!");
+      if (verified === true) {
+        await AsyncStorage.removeItem('manor_pending_ord');
+        Alert.alert("🎉 Payment Successful", "Payment verified and order confirmed successfully!");
+      } else {
+        Alert.alert("⏳ Confirming Payment", "We are confirming your payment. If it does not update in a minute, tap Check in Orders.");
+      }
     } catch(e) {
       setActiveTab('orders');
     }
@@ -337,8 +333,9 @@ export default function CustomerApp() {
           setSavedAddresses([savedAddr]);
         }
         setIsLoggedIn(true);
-        fetchCustomerOrders(savedPhone);
         registerForPushNotifications(savedPhone);
+      } else {
+        registerForPushNotifications();
       }
     } catch(e) {}
   };
@@ -386,10 +383,10 @@ export default function CustomerApp() {
             loadStoreConfig(fastLoc.coords.latitude, fastLoc.coords.longitude);
           }
 
-          let liveLoc = await Location.getCurrentPositionAsync({ 
-            accuracy: Location.Accuracy.Balanced,
-            timeout: 6000
-          }).catch(() => null);
+          let liveLoc = await Promise.race([
+            Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+            new Promise(resolve => setTimeout(() => resolve(null), 8000))
+          ]).catch(() => null);
 
           if (liveLoc?.coords) {
             gpsFetchedRef.current = true;
@@ -428,19 +425,22 @@ export default function CustomerApp() {
     loadStoreConfig(custLatRef.current, custLngRef.current);
   };
 
-  const loadStoreConfig = (lat, lng) => {
-    fetch(db + ".json").then(r => r.json()).then(data => {
-      if (!data) return;
-      let currentSettings = storeSettings;
-      if (data.settings) {
-        currentSettings = { ...storeSettings, ...data.settings };
-        setStoreSettings(currentSettings);
-      }
-      if (data.categories) setCategories(data.categories);
-      if (data.deliveryBoys) setDeliveryBoysList(data.deliveryBoys);
+  const fetchStoreData = async () => {
+    const get = (path) => fetch(db + path + '.json').then(r => r.json()).then(d => (d && d.error ? null : d));
+    const [settings, cats, boys] = await Promise.all([get('settings'), get('categories'), get('deliveryBoys')]);
+    return { settings, categories: cats, deliveryBoys: boys };
+  };
 
-      calcGeoFence(lat, lng, currentSettings.hubLat, currentSettings.hubLng, currentSettings.radiusKm);
-    }).catch(() => {});
+  const applyStoreData = (data) => {
+    if (!data) return;
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    if (data.settings) setStoreSettings(prev => { const next = { ...prev, ...data.settings }; return same(prev, next) ? prev : next; });
+    if (data.categories) setCategories(prev => (same(prev, data.categories) ? prev : data.categories));
+    if (data.deliveryBoys) setDeliveryBoysList(prev => (same(prev, data.deliveryBoys) ? prev : data.deliveryBoys));
+  };
+
+  const loadStoreConfig = () => {
+    fetchStoreData().then(applyStoreData).catch(() => {});
   };
 
   const calcGeoFence = (lat, lng, hLat, hLng, rad) => {
@@ -467,7 +467,7 @@ export default function CustomerApp() {
     setInRange(allowed);
   };
 
-  const sanitizeInput = (str) => (str || '').replace(/[.#$[\]/]/g, '').trim();
+  const sanitizeInput = (str) => (str || '').replace(/\s+/g, ' ').trim();
 
   const formatOrderDateTime = (ts) => {
     if (!ts) return '';
@@ -486,9 +486,12 @@ export default function CustomerApp() {
     }
   };
 
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
   const updateCartQty = (prod, delta) => {
     if (!prod || !prod.id) return;
-    if (prod.inStock === false) {
+    // Only block ADDING out-of-stock items; removing/decreasing must always work
+    if (prod.inStock === false && delta > 0) {
       return Alert.alert("Out of Stock", "Sorry, this item is currently out of stock.");
     }
     let pKey = prod.id;
@@ -506,6 +509,7 @@ export default function CustomerApp() {
       } else {
         up[pKey] = { 
           id: prod.id,
+          catName: prod.catName || up[pKey]?.catName || '',
           name: prod.name || 'Item',
           unit: prod.unit || '',
           price: priceVal,
@@ -519,18 +523,53 @@ export default function CustomerApp() {
     });
   };
 
+  const computeTotals = (itemsObj, delType) => {
+    const list = Object.values(itemsObj || {});
+    const sub = round2(list.reduce((sum, i) => sum + (Number(i.effectivePrice || 0) * Number(i.qty || 0)), 0));
+    const freeThreshold = Number(storeSettings.freeDel || 0);
+    const normFee = Number(storeSettings.normCharge || 0);
+    const expExtra = Number(storeSettings.expCharge || 30);
+    let fee = (freeThreshold > 0 && sub >= freeThreshold) ? 0 : normFee;
+    if (delType === 'Express') fee += expExtra;
+    return { subtotal: sub, deliveryFee: fee, finalTotal: round2(sub + (sub > 0 ? fee : 0)) };
+  };
+
   let cartItemsList = Object.values(cart || {});
-  let subtotal = cartItemsList.reduce((sum, i) => sum + (Number(i.effectivePrice || 0) * Number(i.qty || 0)), 0);
+  const { subtotal, deliveryFee, finalTotal } = computeTotals(cart, deliveryType);
 
-  let deliveryFee = 0;
-  let freeThreshold = Number(storeSettings.freeDel || 0);
-  let normFee = Number(storeSettings.normCharge || 0);
-  let expExtra = Number(storeSettings.expCharge || 30);
+  // Compares the cart against the latest catalog (price / stock / availability)
+  const revalidateCart = (latestCats) => {
+    const validated = {};
+    const notes = [];
+    Object.values(cart || {}).forEach(item => {
+      let live = latestCats?.[item.catName]?.[item.id];
+      if (!live || !live.name) {
+        for (const c of Object.keys(latestCats || {})) {
+          const cand = latestCats[c] && typeof latestCats[c] === 'object' ? latestCats[c][item.id] : null;
+          if (cand && cand.name) { live = cand; break; }
+        }
+      }
+      if (!live || !live.name) { notes.push(`• ${item.name} is no longer available`); return; }
+      if (live.inStock === false) { notes.push(`• ${item.name} is out of stock`); return; }
+      const price = Number(live.price || 0);
+      const disc = Number(live.discount || 0);
+      const eff = price - disc;
+      if (round2(eff) !== round2(item.effectivePrice)) notes.push(`• ${item.name}: price is now ₹${round2(eff)}`);
+      validated[item.id] = { ...item, name: live.name || item.name, unit: live.unit || item.unit, price, discount: disc, effectivePrice: eff };
+    });
+    return { validated, notes };
+  };
 
-  if (freeThreshold > 0 && subtotal >= freeThreshold) deliveryFee = 0;
-  else deliveryFee = normFee;
-  if (deliveryType === 'Express') deliveryFee += expExtra;
-  let finalTotal = subtotal + (subtotal > 0 ? deliveryFee : 0);
+  const openPaymentPage = (orderId) => {
+    // Only ever open OUR payment page. A tampered settings.upi value can never redirect customers elsewhere.
+    const TRUSTED_PAY_HOST = 'https://shabaj9769-alt.github.io/';
+    const custom = (storeSettings.upi || '').trim();
+    const base = custom.startsWith(TRUSTED_PAY_HOST) ? custom : TRUSTED_PAY_HOST + 'manormart-pay/';
+    AsyncStorage.setItem('manor_pending_ord', orderId).catch(() => {});
+    Linking.openURL(`${base}?order_id=${encodeURIComponent(orderId)}`).catch(() => {
+      Alert.alert("Error", "Unable to open payment checkout page.");
+    });
+  };
 
   const handleLogin = async () => {
     let cleanPh = (loginPhoneInput || '').replace(/[^0-9]/g, '').trim();
@@ -565,11 +604,19 @@ export default function CustomerApp() {
 
   const fetchCustomerOrders = (phone) => {
     if (!phone) return;
-    fetch(db + "orders.json").then(r => r.json()).then(data => {
-      if (!data) return setMyOrders([]);
-      let list = Object.keys(data).map(k => ({ id: k, ...data[k] }));
-      let mine = list.filter(o => o.phone === phone);
-      setMyOrders(mine.reverse());
+    const build = (data) => {
+      if (!data || data.error) return setMyOrders([]);
+      let mine = Object.keys(data).map(k => ({ id: k, ...data[k] })).filter(o => o.phone === phone);
+      mine.sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+      setMyOrders(mine);
+    };
+    // Needs ".indexOn": ["phone"] under "orders" in Firebase rules; falls back to full fetch if missing
+    const q = `orders.json?orderBy=${encodeURIComponent('"phone"')}&equalTo=${encodeURIComponent('"' + phone + '"')}`;
+    fetch(db + q).then(r => r.json()).then(data => {
+      if (data && data.error) {
+        return fetch(db + "orders.json").then(r => r.json()).then(build);
+      }
+      build(data);
     }).catch(() => {});
   };
 
@@ -612,6 +659,16 @@ export default function CustomerApp() {
           }, style: "destructive" }
       ]
     );
+  };
+
+  // Online orders are shown as paid ONLY if the server verified them (paymentVerified),
+  // or they are old orders that carry a real Razorpay payment id. Anything else is shown as unpaid.
+  const effectiveStatus = (ord) => {
+    const s = ord.deliveryStatus || '';
+    const progressed = /Cancelled|Assigned|Out for Delivery|Delivered/.test(s);
+    const looksPaid = ord.paymentVerified === true || !!ord.razorpayPaymentId;
+    if (ord.payment === 'Online' && !looksPaid && !progressed) return '⏳ Payment Pending';
+    return s;
   };
 
   const handleCancelOrderAction = (orderId, currentStatus, paymentModeVal) => {
@@ -716,8 +773,13 @@ export default function CustomerApp() {
   };
 
   const placeOrder = async () => {
+    if (placingRef.current) return; // double-tap guard
+
     if (storeSettings.storeOpen === false) {
       return Alert.alert("Store Closed", "Store is currently closed. New orders are temporarily suspended.");
+    }
+    if (cartItemsList.length === 0 || subtotal <= 0) {
+      return Alert.alert("Cart Empty", "Please add items to your cart first.");
     }
 
     let cleanName = sanitizeInput(custName);
@@ -740,65 +802,79 @@ export default function CustomerApp() {
       return Alert.alert("Minimum Order Limit", `Minimum order amount required is ₹${minOrd}.`);
     }
 
-    let currentTimestamp = Date.now();
-    let orderId = 'ord_' + currentTimestamp + '_' + Math.floor(Math.random() * 1000);
-    let initialStatus = paymentMode === 'Online' ? '⏳ Payment Pending' : 'Order Successful';
+    placingRef.current = true;
+    setPlacing(true);
+    try {
+      // Re-check live prices & stock before writing the order
+      const latestCats = await fetch(db + "categories.json").then(r => r.json());
+      if (latestCats && !latestCats.error) {
+        const { validated, notes } = revalidateCart(latestCats);
+        if (notes.length > 0) {
+          setCart(validated);
+          setCategories(latestCats);
+          Alert.alert("Cart Updated", notes.join('\n') + "\n\nPlease review your cart and place the order again.");
+          return;
+        }
+      }
 
-    let orderObj = {
-      id: orderId, 
-      name: cleanName, 
-      phone: custPhone, 
-      addr: cleanAddr,
-      lat: custLatRef.current, 
-      lng: custLngRef.current, 
-      distance: distanceKm, 
-      items: cart,
-      subtotal, 
-      deliveryFee, 
-      total: finalTotal, 
-      deliveryType, 
-      deliveryShift,
-      payment: paymentMode, 
-      deliveryStatus: initialStatus, 
-      assignedBoy: '',
-      deliveryBoyPhone: '',
-      timestamp: currentTimestamp
-    };
+      let currentTimestamp = Date.now();
+      let orderId = 'ord_' + currentTimestamp + '_' + Math.floor(Math.random() * 1000);
+      let initialStatus = paymentMode === 'Online' ? '⏳ Payment Pending' : 'Order Successful';
 
-    fetch(db + `orders/${orderId}.json`, {
-      method: 'PUT',
-      body: JSON.stringify(orderObj)
-    }).then(async () => {
+      let orderObj = {
+        id: orderId, 
+        name: cleanName, 
+        phone: custPhone, 
+        addr: cleanAddr,
+        lat: custLatRef.current, 
+        lng: custLngRef.current, 
+        distance: distanceKm, 
+        items: cart,
+        subtotal, 
+        deliveryFee, 
+        total: finalTotal, 
+        deliveryType, 
+        deliveryShift,
+        payment: paymentMode, 
+        deliveryStatus: initialStatus, 
+        assignedBoy: '',
+        deliveryBoyPhone: '',
+        timestamp: currentTimestamp
+      };
+
+      const res = await fetch(db + `orders/${orderId}.json`, {
+        method: 'PUT',
+        body: JSON.stringify(orderObj)
+      });
+      if (!res.ok) throw new Error('Order write failed: ' + res.status);
+
       fetch(db + `customers/${custPhone}.json`, {
         method: 'PATCH',
         body: JSON.stringify({ name: cleanName, addr: cleanAddr, phone: custPhone })
       }).catch(() => {});
 
       triggerPushToAdmin(orderId, finalTotal);
-
       setCart({});
+
       if (paymentMode === 'Online') {
-        await AsyncStorage.setItem('manor_pending_ord', orderId);
-        let customBaseUrl = storeSettings.upi && storeSettings.upi.trim().startsWith('http') 
-          ? storeSettings.upi.trim() 
-          : 'https://shabaj9769-alt.github.io/manormart-pay/';
-        
-        let targetUrl = `${customBaseUrl}?amount=${finalTotal}&order_id=${orderId}&app_scheme=manormart`;
-        
-        Linking.openURL(targetUrl).catch(() => {
-          Alert.alert("Error", "Unable to open payment checkout page.");
-        });
+        // Order is saved as "Payment Pending"; the Orders tab has Pay Now / Check buttons
+        setActiveTab('orders');
+        fetchCustomerOrders(custPhone);
+        openPaymentPage(orderId);
       } else {
         setActiveTab('orders');
         fetchCustomerOrders(custPhone);
         Alert.alert("Order Placed", `Order #${orderId.slice(-6)} placed successfully!`);
       }
-    }).catch(() => {
-      Alert.alert("Network Error", "Unable to place order. Please check your internet connection.");
-    });
+    } catch (e) {
+      Alert.alert("Network Error", "Unable to place order. Please check your internet connection and try again.");
+    } finally {
+      placingRef.current = false;
+      setPlacing(false);
+    }
   };
 
-  const renderTimelineTracker = (status, orderId) => {
+  const renderTimelineTracker = (status, orderId, total) => {
     let steps = ['Order Successful', 'Assigned', 'Out for Delivery', 'Delivered'];
     let currentStepIdx = 0;
     if (status === 'Assigned') currentStepIdx = 1;
@@ -806,23 +882,26 @@ export default function CustomerApp() {
     else if (status === 'Delivered') currentStepIdx = 3;
     else if (status && status.includes('Payment Pending')) {
       return (
-        <View style={{marginVertical: 6, backgroundColor: '#fff3e0', padding: 8, borderRadius: 6, borderWidth: 1, borderColor: '#ffb74d', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'}}>
-          <View>
-            <Text style={{fontSize: 11, color: '#e65100', fontWeight: 'bold'}}>⏳ Awaiting Payment Completion</Text>
-            <Text style={{fontSize: 9.5, color: '#666', marginTop: 2}}>Tap check if payment completed:</Text>
+        <View style={{marginVertical: 6, backgroundColor: '#fff3e0', padding: 8, borderRadius: 6, borderWidth: 1, borderColor: '#ffb74d'}}>
+          <Text style={{fontSize: 11, color: '#e65100', fontWeight: 'bold'}}>⏳ Awaiting Payment Completion</Text>
+          <Text style={{fontSize: 9.5, color: '#666', marginTop: 2}}>Already paid? Tap Check. Not paid yet? Tap Pay Now.</Text>
+          <View style={{flexDirection: 'row', marginTop: 6}}>
+            <TouchableOpacity onPress={() => openPaymentPage(orderId)} style={{backgroundColor: '#2e7d32', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 5, marginRight: 8}}>
+              <Text style={{color: '#fff', fontSize: 10, fontWeight: 'bold'}}>💳 Pay Now</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => {
+              fetch(db + `orders/${orderId}.json`).then(r => r.json()).then(ord => {
+                if (ord && ord.paymentVerified === true) {
+                  Alert.alert("Verified", "Payment verified and order confirmed!");
+                  fetchCustomerOrders(custPhone);
+                } else {
+                  Alert.alert("Pending", "Payment is still unverified. Please try again in a few moments.");
+                }
+              }).catch(() => Alert.alert("Network Error", "Please check your internet connection."));
+            }} style={{backgroundColor: '#e65100', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 5}}>
+              <Text style={{color: '#fff', fontSize: 10, fontWeight: 'bold'}}>🔄 Check</Text>
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity onPress={() => {
-            fetch(db + `orders/${orderId}.json`).then(r => r.json()).then(ord => {
-              if (ord && ord.deliveryStatus === 'Order Successful') {
-                Alert.alert("Verified", "Payment verified and order confirmed!");
-                fetchCustomerOrders(custPhone);
-              } else {
-                Alert.alert("Pending", "Payment is still unverified. Please try again in a few moments.");
-              }
-            });
-          }} style={{backgroundColor: '#e65100', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 5}}>
-            <Text style={{color: '#fff', fontSize: 10, fontWeight: 'bold'}}>🔄 Check</Text>
-          </TouchableOpacity>
         </View>
       );
     } else if (status && status.includes('Cancelled')) {
@@ -850,7 +929,7 @@ export default function CustomerApp() {
   };
 
   const renderTermsModal = () => (
-    <Modal visible={!termsAccepted} transparent={true} animationType="slide">
+    <Modal visible={!termsAccepted && !showLegalModal} transparent={true} animationType="slide" onRequestClose={() => {}}>
       <View style={s.modalOverlay}>
         <View style={s.modalCard}>
           <Text style={{fontSize: 28, marginBottom: 4, textAlign: 'center'}}>📜✨</Text>
@@ -874,7 +953,7 @@ export default function CustomerApp() {
   );
 
   const renderInAppLegalModal = () => (
-    <Modal visible={showLegalModal} animationType="slide" transparent={false}>
+    <Modal visible={showLegalModal} animationType="slide" transparent={false} onRequestClose={() => setShowLegalModal(false)}>
       <SafeAreaView style={{flex: 1, backgroundColor: '#ffffff'}}>
         <View style={s.policyHeader}>
           <Text style={{color: '#fff', fontSize: 14, fontWeight: 'bold'}}>📜 Store Legal Policies & Terms</Text>
@@ -997,7 +1076,7 @@ export default function CustomerApp() {
             { key: 'orders', label: '📦 Orders' },
             { key: 'profile', label: '⚙️ Profile' },
             { key: 'exit', label: '🚪 Exit', action: handleExitApp }
-          ].map(t => (
+          ].filter(t => t.key !== 'exit' || Platform.OS === 'android').map(t => (
             <TouchableOpacity key={t.key} onPress={t.action ? t.action : () => { setActiveTab(t.key); if(t.key==='orders') fetchCustomerOrders(custPhone); }} style={[s.headerTabBtn, activeTab === t.key && s.headerTabAct, t.key === 'exit' && {backgroundColor: '#c62828'}]}>
               <Text style={{fontSize: 9.5, fontWeight: 'bold', color: t.key === 'exit' ? '#fff' : (activeTab === t.key ? '#6a1b9a' : '#fff'), textAlign: 'center'}} numberOfLines={1}>
                 {t.label}
@@ -1085,12 +1164,12 @@ export default function CustomerApp() {
                   ) : (
                     <View style={s.productsGridContainer}>
                       {itemsToDisplay.map((pr, idx) => {
-                        let effPrice = Number(pr.price || 0) - Number(pr.discount || 0);
+                        let effPrice = round2(Number(pr.price || 0) - Number(pr.discount || 0));
                         let cartQty = cart[pr.id]?.qty || 0;
                         let isSoldOut = pr.inStock === false;
 
                         return (
-                          <View key={idx} style={[s.gridCard, isSoldOut && {backgroundColor: '#f5f5f5'}]}>
+                          <View key={`${pr.catName}_${pr.id}`} style={[s.gridCard, isSoldOut && {backgroundColor: '#f5f5f5'}]}>
                             {pr.image && typeof pr.image === 'string' && pr.image.trim().startsWith('http') ? (
                               <Image source={{ uri: pr.image.trim() }} style={s.gridImg} />
                             ) : (
@@ -1157,7 +1236,8 @@ export default function CustomerApp() {
               myOrders.map(ord => {
                 let isDeleting = deleteStepOrder === ord.id;
                 let isCancelling = cancelStepOrder === ord.id;
-                let isWaitingPayment = ord.deliveryStatus && ord.deliveryStatus.includes('Payment Pending');
+                const effStat = effectiveStatus(ord);
+                let isWaitingPayment = effStat.includes('Payment Pending');
                 let isCancelled = ord.deliveryStatus && ord.deliveryStatus.includes('Cancelled');
                 let orderTimeFormatted = formatOrderDateTime(ord.timestamp);
 
@@ -1189,7 +1269,7 @@ export default function CustomerApp() {
                       </Text>
                     ) : null}
                     
-                    {renderTimelineTracker(ord.deliveryStatus, ord.id)}
+                    {renderTimelineTracker(effStat, ord.id, ord.total)}
 
                     {ord.assignedBoy ? (
                       <View style={{backgroundColor: '#e8f5e9', padding: 10, borderRadius: 8, marginVertical: 6, borderWidth: 1, borderColor: '#a5d6a7'}}>
@@ -1210,7 +1290,7 @@ export default function CustomerApp() {
 
                     {!isCancelled && !ord.deliveryStatus?.includes('Delivered') && !ord.deliveryStatus?.includes('Out for Delivery') && (
                       <TouchableOpacity 
-                        onPress={() => handleCancelOrderAction(ord.id, ord.deliveryStatus, ord.payment)} 
+                        onPress={() => handleCancelOrderAction(ord.id, effStat, ord.payment)} 
                         style={{backgroundColor: isCancelling ? '#b71c1c' : '#d32f2f', padding: 6, borderRadius: 5, marginVertical: 3, alignItems: 'center'}}
                       >
                         <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 10.5}}>
@@ -1244,7 +1324,7 @@ export default function CustomerApp() {
               <TextInput 
                 style={s.i} 
                 value={custName} 
-                onChangeText={v => setCustName(sanitizeInput(v))} 
+                onChangeText={setCustName} 
                 placeholder="Enter Full Name" 
               />
               
@@ -1271,7 +1351,7 @@ export default function CustomerApp() {
               <TextInput 
                 style={[s.i, {height: 52}]} 
                 value={custAddr} 
-                onChangeText={v => setCustAddr(sanitizeInput(v))} 
+                onChangeText={setCustAddr} 
                 placeholder="House No, Landmark, Area, Town" 
                 multiline={true} 
               />
@@ -1335,12 +1415,14 @@ export default function CustomerApp() {
                   <Text style={s.btnTxt}>🚪 Logout</Text>
                 </TouchableOpacity>
 
+                {Platform.OS === 'android' && (
                 <TouchableOpacity 
                   style={[s.btn, {backgroundColor: '#555', flex: 1, marginLeft: 4, padding: 9}]} 
                   onPress={handleExitApp}
                 >
                   <Text style={s.btnTxt}>🔴 Exit App</Text>
                 </TouchableOpacity>
+                )}
               </View>
 
               <TouchableOpacity 
@@ -1367,7 +1449,7 @@ export default function CustomerApp() {
         </View>
       )}
 
-      <Modal visible={activeTab === 'cart'} animationType="slide">
+      <Modal visible={activeTab === 'cart'} animationType="slide" onRequestClose={() => setActiveTab('shop')}>
         <SafeAreaView style={{flex: 1, backgroundColor: '#fffde7', width: '100%'}}>
           <View style={s.hdr}>
             <Text style={s.ht}>🛒 Cart & Secure Checkout</Text>
@@ -1382,7 +1464,7 @@ export default function CustomerApp() {
                 <View key={item.id} style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6, borderBottomWidth: 0.5, borderColor: '#eee'}}>
                   <View style={{flex: 1, paddingRight: 8}}>
                     <Text style={{fontWeight: 'bold', fontSize: 11.5}}>{item.name} ({item.unit})</Text>
-                    <Text style={{fontSize: 9.5, color: '#666', marginTop: 2}}>₹{item.effectivePrice} x {item.qty} = ₹{item.effectivePrice * item.qty}</Text>
+                    <Text style={{fontSize: 9.5, color: '#666', marginTop: 2}}>₹{round2(item.effectivePrice)} x {item.qty} = ₹{round2(item.effectivePrice * item.qty)}</Text>
                   </View>
                   <View style={{flexDirection: 'row', alignItems: 'center'}}>
                     <View style={s.qtyConCart}>
@@ -1462,11 +1544,12 @@ export default function CustomerApp() {
               </View>
 
               <TouchableOpacity 
-                style={[s.btn, {marginTop: 12, backgroundColor: '#6a1b9a', padding: 10}]} 
+                style={[s.btn, {marginTop: 12, backgroundColor: '#6a1b9a', padding: 10, opacity: placing ? 0.6 : 1}]} 
                 onPress={placeOrder}
+                disabled={placing}
               >
                 <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5, textAlign: 'center'}}>
-                  {paymentMode === 'Online' ? `Pay ₹${finalTotal} & Place Order` : `Place COD Order (₹${finalTotal})`}
+                  {placing ? 'Placing order...' : paymentMode === 'Online' ? `Pay ₹${finalTotal} & Place Order` : `Place COD Order (₹${finalTotal})`}
                 </Text>
               </TouchableOpacity>
             </View>
