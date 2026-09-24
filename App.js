@@ -225,11 +225,11 @@ export default function CustomerApp() {
         },
         body: JSON.stringify({
           to: targetToken,
-          sound: 'default',
+          sound: null,
           title: '🚨 NEW ORDER RECEIVED!',
           body: `Order #${orderId.slice(-6)} received! Total: ₹${totalAmt}`,
           priority: 'high',
-          channelId: 'default',
+          channelId: 'order-vibrate',
           data: { 
             orderId: orderId,
             url: 'martadmin://' 
