@@ -10,7 +10,10 @@ import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 
+// Firebase Fallback (Unmigrated direct updates ke liye)
 const db = "https://manorbiryani-default-rtdb.firebaseio.com/";
+// Secure Vercel API Base
+const API_BASE = "https://manormart-pay.vercel.app/api";
 
 // Foreground Notification handling
 Notifications.setNotificationHandler({
@@ -301,10 +304,13 @@ export default function CustomerApp() {
   // The app never marks an order as paid. Only the server (verify-payment / webhook) sets paymentVerified.
   const verifyAndConfirmOrder = async (orderId) => {
     try {
-      const verified = await fetch(db + `orders/${orderId}/paymentVerified.json`).then(r => r.json());
+      const orderData = await fetch(`${API_BASE}/orders-manager?orderId=${orderId}`).then(r => r.json());
+      const verified = orderData && orderData.paymentVerified === true;
+      
       let phone = custPhoneRef.current || await AsyncStorage.getItem('manor_cust_phone');
       if (phone) fetchCustomerOrders(phone);
       setActiveTab('orders');
+      
       if (verified === true) {
         await AsyncStorage.removeItem('manor_pending_ord');
         Alert.alert("🎉 Payment Successful", "Payment verified and order confirmed successfully!");
@@ -426,8 +432,12 @@ export default function CustomerApp() {
   };
 
   const fetchStoreData = async () => {
-    const get = (path) => fetch(db + path + '.json').then(r => r.json()).then(d => (d && d.error ? null : d));
-    const [settings, cats, boys] = await Promise.all([get('settings'), get('categories'), get('deliveryBoys')]);
+    const getAPI = (endpoint) => fetch(API_BASE + endpoint).then(r => r.json()).then(d => (d && d.error ? null : d));
+    const [settings, cats, boys] = await Promise.all([
+      getAPI('/settings'), 
+      getAPI('/catalog'), 
+      getAPI('/delivery-partners')
+    ]);
     return { settings, categories: cats, deliveryBoys: boys };
   };
 
@@ -582,7 +592,7 @@ export default function CustomerApp() {
     registerForPushNotifications(cleanPh);
     fetchCustomerOrders(cleanPh);
     
-    fetch(db + `customers/${cleanPh}.json`).then(r => r.json()).then(async (userData) => {
+    fetch(`${API_BASE}/customers?phone=${cleanPh}`).then(r => r.json()).then(async (userData) => {
       if (userData) {
         if (userData.name) {
           setCustName(userData.name);
@@ -604,20 +614,14 @@ export default function CustomerApp() {
 
   const fetchCustomerOrders = (phone) => {
     if (!phone) return;
-    const build = (data) => {
-      if (!data || data.error) return setMyOrders([]);
-      let mine = Object.keys(data).map(k => ({ id: k, ...data[k] })).filter(o => o.phone === phone);
-      mine.sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
-      setMyOrders(mine);
-    };
-    // Needs ".indexOn": ["phone"] under "orders" in Firebase rules; falls back to full fetch if missing
-    const q = `orders.json?orderBy=${encodeURIComponent('"phone"')}&equalTo=${encodeURIComponent('"' + phone + '"')}`;
-    fetch(db + q).then(r => r.json()).then(data => {
-      if (data && data.error) {
-        return fetch(db + "orders.json").then(r => r.json()).then(build);
-      }
-      build(data);
-    }).catch(() => {});
+    fetch(`${API_BASE}/orders-manager?phone=${phone}`)
+      .then(r => r.json())
+      .then(data => {
+        if (!data || data.error) return setMyOrders([]);
+        let mine = Object.keys(data).map(k => ({ id: k, ...data[k] }));
+        mine.sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+        setMyOrders(mine);
+      }).catch(() => {});
   };
 
   const handleLogout = async () => {
@@ -806,7 +810,7 @@ export default function CustomerApp() {
     setPlacing(true);
     try {
       // Re-check live prices & stock before writing the order
-      const latestCats = await fetch(db + "categories.json").then(r => r.json());
+      const latestCats = await fetch(API_BASE + "/catalog").then(r => r.json());
       if (latestCats && !latestCats.error) {
         const { validated, notes } = revalidateCart(latestCats);
         if (notes.length > 0) {
@@ -842,9 +846,10 @@ export default function CustomerApp() {
         timestamp: currentTimestamp
       };
 
-      const res = await fetch(db + `orders/${orderId}.json`, {
-        method: 'PUT',
-        body: JSON.stringify(orderObj)
+      const res = await fetch(`${API_BASE}/orders-manager`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'createOrder', orderData: orderObj })
       });
       if (!res.ok) throw new Error('Order write failed: ' + res.status);
 
@@ -890,7 +895,7 @@ export default function CustomerApp() {
               <Text style={{color: '#fff', fontSize: 10, fontWeight: 'bold'}}>💳 Pay Now</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => {
-              fetch(db + `orders/${orderId}.json`).then(r => r.json()).then(ord => {
+              fetch(`${API_BASE}/orders-manager?orderId=${orderId}`).then(r => r.json()).then(ord => {
                 if (ord && ord.paymentVerified === true) {
                   Alert.alert("Verified", "Payment verified and order confirmed!");
                   fetchCustomerOrders(custPhone);
