@@ -10,10 +10,9 @@ import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 
-// Firebase Fallback (Unmigrated direct updates ke liye)
-const db = "https://manorbiryani-default-rtdb.firebaseio.com/";
-// Secure Vercel API Base
+// Customer App talks to the Vercel backend only. No direct Firebase client access.
 const API_BASE = "https://manormart-pay.vercel.app/api";
+const CUSTOMER_TOKEN_KEY = 'manor_customer_session';
 
 // Foreground Notification handling
 Notifications.setNotificationHandler({
@@ -44,7 +43,6 @@ export default function CustomerApp() {
     b1: '',
     b2: '',
     b3: '',
-    adminPushToken: ''
   });
 
   const [categories, setCategories] = useState({});
@@ -68,6 +66,12 @@ export default function CustomerApp() {
   const [savedAddresses, setSavedAddresses] = useState([]);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [loginPhoneInput, setLoginPhoneInput] = useState('');
+  const [loginPasswordInput, setLoginPasswordInput] = useState('');
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [oldPasswordInput, setOldPasswordInput] = useState('');
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [savingPassword, setSavingPassword] = useState(false);
+  const [loggingIn, setLoggingIn] = useState(false);
 
   const [deliveryType, setDeliveryType] = useState('Normal');
   const [deliveryShift, setDeliveryShift] = useState('Morning (8 AM - 11 AM)');
@@ -85,6 +89,40 @@ export default function CustomerApp() {
   const custPhoneRef = useRef('');
   const placingRef = useRef(false);
   const [placing, setPlacing] = useState(false);
+  const sessionExpiredAlertShownRef = useRef(false);
+
+  // Wraps fetch with a timeout so a slow/cold Vercel function fails fast
+  // instead of leaving the UI looking "stuck" with no feedback.
+  const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  // Every customer API request carries the signed customer session token.
+  const customerFetch = async (endpoint, options = {}) => {
+    const token = await AsyncStorage.getItem(CUSTOMER_TOKEN_KEY);
+    const headers = { ...(options.headers || {}) };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+    const res = await fetchWithTimeout(API_BASE + endpoint, { ...options, headers });
+    if (res.status === 401) {
+      // Token was rejected by the server (expired/invalid). Clear it and, if we
+      // thought we were logged in, drop the user back to the login screen instead
+      // of silently leaving every subsequent request failing with 401.
+      await AsyncStorage.removeItem(CUSTOMER_TOKEN_KEY);
+      if (token && !sessionExpiredAlertShownRef.current) {
+        sessionExpiredAlertShownRef.current = true;
+        setIsLoggedIn(false);
+        Alert.alert('Session Expired', 'Please log in again.');
+      }
+    }
+    return res;
+  };
 
   // Always keep the latest phone in a ref so long-lived listeners never read a stale value
   useEffect(() => {
@@ -195,54 +233,18 @@ export default function CustomerApp() {
     }
   };
 
-  const saveCustomerPushToken = (token, phone) => {
-    if (!token) return;
-    let clean = (phone || '').replace(/[^0-9]/g, '').trim();
-    let tokenKey = clean.length === 10 ? clean : 'token_' + token.slice(-12).replace(/[^a-zA-Z0-9]/g, '');
-    fetch(db + `customerTokens/${tokenKey}.json`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        token: token,
-        phone: clean || '',
-        updatedAt: Date.now()
-      })
-    }).catch(() => {});
-  };
-
-  const triggerPushToAdmin = async (orderId, totalAmt) => {
+  const saveCustomerPushToken = async (token, phone) => {
+    if (!token || !phone) return;
     try {
-      let targetToken = storeSettings.adminPushToken;
-      if (!targetToken) {
-        let setSnap = await fetch(db + "settings/adminPushToken.json").then(r => r.json());
-        targetToken = setSnap;
-      }
-      if (!targetToken) return;
-
-      await fetch('https://exp.host/--/api/v2/push/send', {
+      await customerFetch('/customers', {
         method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Accept-Encoding': 'gzip, deflate',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          to: targetToken,
-          sound: null,
-          title: '🚨 NEW ORDER RECEIVED!',
-          body: `Order #${orderId.slice(-6)} received! Total: ₹${totalAmt}`,
-          priority: 'high',
-          channelId: 'order-vibrate',
-          data: { 
-            orderId: orderId,
-            url: 'martadmin://' 
-          }
-        }),
+        body: JSON.stringify({ action: 'savePushToken', phone, token })
       });
-    } catch (e) {
-      console.log("Push trigger error:", e);
-    }
+    } catch (e) {}
   };
+
+  // Admin notification is triggered server-side when an order is created.
+  // The customer app never reads adminPushToken or sends notifications to admin.
 
   useEffect(() => {
     const backAction = () => {
@@ -304,7 +306,7 @@ export default function CustomerApp() {
   // The app never marks an order as paid. Only the server (verify-payment / webhook) sets paymentVerified.
   const verifyAndConfirmOrder = async (orderId) => {
     try {
-      const orderData = await fetch(`${API_BASE}/orders-manager?orderId=${orderId}`).then(r => r.json());
+      const orderData = await customerFetch(`/orders-manager?orderId=${encodeURIComponent(orderId)}`).then(r => r.json());
       const verified = orderData && orderData.paymentVerified === true;
       
       let phone = custPhoneRef.current || await AsyncStorage.getItem('manor_cust_phone');
@@ -324,26 +326,28 @@ export default function CustomerApp() {
 
   const checkSavedCustomerSession = async () => {
     try {
-      let savedPhone = await AsyncStorage.getItem('manor_cust_phone');
-      let savedName = await AsyncStorage.getItem('manor_cust_name');
-      let savedAddr = await AsyncStorage.getItem('manor_cust_addr');
-      let savedAddrsList = await AsyncStorage.getItem('manor_cust_addrs_list');
-
-      if (savedPhone) {
-        setCustPhone(savedPhone);
-        if (savedName) setCustName(savedName);
-        if (savedAddr) setCustAddr(savedAddr);
-        if (savedAddrsList) {
-          try { setSavedAddresses(JSON.parse(savedAddrsList)); } catch(e){}
-        } else if (savedAddr) {
-          setSavedAddresses([savedAddr]);
-        }
-        setIsLoggedIn(true);
-        registerForPushNotifications(savedPhone);
-      } else {
+      const token = await AsyncStorage.getItem(CUSTOMER_TOKEN_KEY);
+      if (!token) { registerForPushNotifications(); return; }
+      const savedPhone = await AsyncStorage.getItem('manor_cust_phone');
+      if (!savedPhone) { await AsyncStorage.removeItem(CUSTOMER_TOKEN_KEY); registerForPushNotifications(); return; }
+      const res = await customerFetch(`/customers?phone=${encodeURIComponent(savedPhone)}`);
+      const userData = await res.json().catch(() => null);
+      if (!res.ok || !userData || userData.error) {
+        await AsyncStorage.removeItem(CUSTOMER_TOKEN_KEY);
+        await AsyncStorage.removeItem('manor_cust_phone');
         registerForPushNotifications();
+        return;
       }
-    } catch(e) {}
+      setCustPhone(savedPhone);
+      if (userData.name) { setCustName(userData.name); await AsyncStorage.setItem('manor_cust_name', userData.name); }
+      if (userData.addr) { setCustAddr(userData.addr); await AsyncStorage.setItem('manor_cust_addr', userData.addr); }
+      if (Array.isArray(userData.addresses)) { setSavedAddresses(userData.addresses); await AsyncStorage.setItem('manor_cust_addrs_list', JSON.stringify(userData.addresses)); }
+      setIsLoggedIn(true);
+      registerForPushNotifications(savedPhone);
+    } catch(e) {
+      await AsyncStorage.removeItem(CUSTOMER_TOKEN_KEY).catch(() => {});
+      registerForPushNotifications();
+    }
   };
 
   const detectGPSAndLoadStore = async (forceManual = false) => {
@@ -433,12 +437,8 @@ export default function CustomerApp() {
 
   const fetchStoreData = async () => {
     const getAPI = (endpoint) => fetch(API_BASE + endpoint).then(r => r.json()).then(d => (d && d.error ? null : d));
-    const [settings, cats, boys] = await Promise.all([
-      getAPI('/settings'), 
-      getAPI('/catalog'), 
-      getAPI('/delivery-partners')
-    ]);
-    return { settings, categories: cats, deliveryBoys: boys };
+    const [settings, cats] = await Promise.all([getAPI('/settings'), getAPI('/catalog')]);
+    return { settings, categories: cats, deliveryBoys: {} };
   };
 
   const applyStoreData = (data) => {
@@ -582,39 +582,56 @@ export default function CustomerApp() {
   };
 
   const handleLogin = async () => {
-    let cleanPh = (loginPhoneInput || '').replace(/[^0-9]/g, '').trim();
+    if (loggingIn) return; // guard against double-tap firing two requests
+    const cleanPh = (loginPhoneInput || '').replace(/[^0-9]/g, '').trim();
     if (cleanPh.length !== 10) return Alert.alert("Invalid Phone", "Please enter a valid 10-digit mobile number.");
-    
-    setCustPhone(cleanPh);
-    setIsLoggedIn(true);
-    await AsyncStorage.setItem('manor_cust_phone', cleanPh);
-    
-    registerForPushNotifications(cleanPh);
-    fetchCustomerOrders(cleanPh);
-    
-    fetch(`${API_BASE}/customers?phone=${cleanPh}`).then(r => r.json()).then(async (userData) => {
-      if (userData) {
-        if (userData.name) {
-          setCustName(userData.name);
-          await AsyncStorage.setItem('manor_cust_name', userData.name);
-        }
-        if (userData.addr) {
-          setCustAddr(userData.addr);
-          await AsyncStorage.setItem('manor_cust_addr', userData.addr);
-        }
-        if (userData.addresses && Array.isArray(userData.addresses)) {
-          setSavedAddresses(userData.addresses);
-          await AsyncStorage.setItem('manor_cust_addrs_list', JSON.stringify(userData.addresses));
-        }
-      }
-    }).catch(() => {});
+    if (!loginPasswordInput || loginPasswordInput.length < 8) return Alert.alert("Password Required", "Password must be at least 8 characters.");
+    setLoggingIn(true);
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/customer-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: cleanPh, password: loginPasswordInput })
+      });
+      const data = await res.json().catch(() => ({}));
 
-    Alert.alert("Welcome", "Logged in successfully!");
+      if (res.status === 401 || res.status === 403 || res.status === 404) {
+        // Server explicitly rejected the credentials.
+        return Alert.alert("Login Failed", data.error || "Invalid mobile number or password.");
+      }
+      if (!res.ok || !data.token) {
+        // Server reached, but something else went wrong (500, malformed response, etc.)
+        // Don't tell the user their password is wrong when it's actually a server issue.
+        return Alert.alert("Login Failed", data.error || "Something went wrong on our end. Please try again in a moment.");
+      }
+
+      await AsyncStorage.setItem(CUSTOMER_TOKEN_KEY, data.token);
+      await AsyncStorage.setItem('manor_cust_phone', cleanPh);
+      sessionExpiredAlertShownRef.current = false;
+      setCustPhone(cleanPh);
+      setIsLoggedIn(true);
+      setLoginPasswordInput('');
+      const userData = data.customer || {};
+      if (userData.name) { setCustName(userData.name); await AsyncStorage.setItem('manor_cust_name', userData.name); }
+      if (userData.addr) { setCustAddr(userData.addr); await AsyncStorage.setItem('manor_cust_addr', userData.addr); }
+      if (Array.isArray(userData.addresses)) { setSavedAddresses(userData.addresses); await AsyncStorage.setItem('manor_cust_addrs_list', JSON.stringify(userData.addresses)); }
+      registerForPushNotifications(cleanPh);
+      fetchCustomerOrders(cleanPh);
+      Alert.alert("Welcome", "Logged in successfully!");
+    } catch (e) {
+      if (e && e.name === 'AbortError') {
+        Alert.alert("Timed Out", "The server took too long to respond. Please try again.");
+      } else {
+        Alert.alert("Network Error", "Unable to login. Please check your internet connection and try again.");
+      }
+    } finally {
+      setLoggingIn(false);
+    }
   };
 
   const fetchCustomerOrders = (phone) => {
     if (!phone) return;
-    fetch(`${API_BASE}/orders-manager?phone=${phone}`)
+    customerFetch(`/orders-manager?phone=${encodeURIComponent(phone)}`)
       .then(r => r.json())
       .then(data => {
         if (!data || data.error) return setMyOrders([]);
@@ -625,6 +642,7 @@ export default function CustomerApp() {
   };
 
   const handleLogout = async () => {
+    await AsyncStorage.removeItem(CUSTOMER_TOKEN_KEY);
     await AsyncStorage.removeItem('manor_cust_phone');
     await AsyncStorage.removeItem('manor_cust_name');
     await AsyncStorage.removeItem('manor_cust_addr');
@@ -637,6 +655,24 @@ export default function CustomerApp() {
     setCart({});
     setActiveTab('shop');
     Alert.alert("Logged Out", "You have been logged out successfully.");
+  };
+
+  const changeCustomerPassword = async () => {
+    if (oldPasswordInput.length < 8 || newPasswordInput.length < 8) return Alert.alert('Invalid Password', 'Both passwords must be at least 8 characters.');
+    if (oldPasswordInput === newPasswordInput) return Alert.alert('Invalid Password', 'New password must be different from the old password.');
+    setSavingPassword(true);
+    try {
+      const res = await customerFetch('/customers', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'changePassword', phone: custPhone, oldPassword: oldPasswordInput, newPassword: newPasswordInput })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return Alert.alert('Password Change Failed', data.error || 'Unable to change password.');
+      setOldPasswordInput(''); setNewPasswordInput(''); setShowChangePassword(false);
+      Alert.alert('Password Changed', 'Your customer password has been updated successfully.');
+    } catch (e) {
+      Alert.alert('Network Error', 'Unable to change password right now.');
+    } finally { setSavingPassword(false); }
   };
 
   const handleDeleteAccount = () => {
@@ -686,20 +722,17 @@ export default function CustomerApp() {
         ? (currentStatus?.includes('Payment Pending') ? '❌ Cancelled (Unpaid)' : '❌ Cancelled (Paid - Refundable)')
         : '❌ Order Cancelled (COD)';
 
-      fetch(db + `orders/${orderId}.json`, {
-        method: 'PATCH',
-        body: JSON.stringify({ deliveryStatus: newCancelStatus })
-      }).then(() => {
+      customerFetch('/orders-manager', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'cancelCustomerOrder', orderId })
+      }).then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || 'Cancel failed');
         fetchCustomerOrders(custPhone);
-        Alert.alert(
-          "Order Cancelled", 
-          paymentModeVal === 'Online' && !currentStatus?.includes('Payment Pending')
-            ? "Your order has been cancelled. For online prepaid orders, the refund will be credited back to your original payment method within 5 to 7 business days."
-            : "Your order has been cancelled successfully."
-        );
-      }).catch(() => {
-        Alert.alert("Error", "Network error. Please try again.");
-      });
+        Alert.alert("Order Cancelled", paymentModeVal === 'Online' && !currentStatus?.includes('Payment Pending')
+          ? "Your order has been cancelled. For online prepaid orders, the refund will be credited back to your original payment method within 5 to 7 business days."
+          : "Your order has been cancelled successfully.");
+      }).catch((e) => Alert.alert("Error", e.message || "Network error. Please try again."));
     } else {
       setCancelStepOrder(orderId);
       setTimeout(() => setCancelStepOrder(null), 4000);
@@ -708,11 +741,9 @@ export default function CustomerApp() {
 
   const confirmDeleteOrder = (orderId) => {
     if (deleteStepOrder === orderId) {
-      fetch(db + `orders/${orderId}.json`, { method: 'DELETE' }).then(() => {
-        setDeleteStepOrder(null);
-        fetchCustomerOrders(custPhone);
-        Alert.alert("Deleted", "Order removed from history.");
-      });
+      // Order deletion is intentionally not exposed to customers. Keep the history intact.
+      setDeleteStepOrder(null);
+      Alert.alert("Not Available", "Orders cannot be deleted from your account history.");
     } else {
       setDeleteStepOrder(orderId);
       setTimeout(() => setDeleteStepOrder(null), 4000);
@@ -729,10 +760,7 @@ export default function CustomerApp() {
       await AsyncStorage.setItem('manor_cust_addrs_list', JSON.stringify(updatedAddrs));
       
       if (custPhone) {
-        fetch(db + `customers/${custPhone}/addresses.json`, {
-          method: 'PUT',
-          body: JSON.stringify(updatedAddrs)
-        }).catch(() => {});
+        customerFetch('/customers', { method: 'POST', body: JSON.stringify({ action: 'saveAddresses', phone: custPhone, addresses: updatedAddrs }) }).catch(() => {});
       }
       Alert.alert("Address Saved", "Delivery address added to your saved list!");
     }
@@ -752,10 +780,7 @@ export default function CustomerApp() {
             setSavedAddresses(updated);
             await AsyncStorage.setItem('manor_cust_addrs_list', JSON.stringify(updated));
             if (custPhone) {
-              fetch(db + `customers/${custPhone}/addresses.json`, {
-                method: 'PUT',
-                body: JSON.stringify(updated)
-              }).catch(() => {});
+              customerFetch('/customers', { method: 'POST', body: JSON.stringify({ action: 'saveAddresses', phone: custPhone, addresses: updated }) }).catch(() => {});
             }
           }
         }
@@ -768,10 +793,7 @@ export default function CustomerApp() {
     if (!cleanName) return Alert.alert("Required", "Please enter your name.");
     await AsyncStorage.setItem('manor_cust_name', cleanName);
     if (custPhone) {
-      fetch(db + `customers/${custPhone}.json`, {
-        method: 'PATCH',
-        body: JSON.stringify({ name: cleanName })
-      }).catch(() => {});
+      customerFetch('/customers', { method: 'POST', body: JSON.stringify({ action: 'updateProfile', phone: custPhone, name: cleanName, addr: custAddr }) }).catch(() => {});
     }
     Alert.alert("Profile Updated", "Your profile details have been saved successfully!");
   };
@@ -846,19 +868,13 @@ export default function CustomerApp() {
         timestamp: currentTimestamp
       };
 
-      const res = await fetch(`${API_BASE}/orders-manager`, {
+      const res = await customerFetch('/orders-manager', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'createOrder', orderData: orderObj })
       });
       if (!res.ok) throw new Error('Order write failed: ' + res.status);
 
-      fetch(db + `customers/${custPhone}.json`, {
-        method: 'PATCH',
-        body: JSON.stringify({ name: cleanName, addr: cleanAddr, phone: custPhone })
-      }).catch(() => {});
-
-      triggerPushToAdmin(orderId, finalTotal);
+      customerFetch('/customers', { method: 'POST', body: JSON.stringify({ action: 'updateProfile', phone: custPhone, name: cleanName, addr: cleanAddr }) }).catch(() => {});
       setCart({});
 
       if (paymentMode === 'Online') {
@@ -895,7 +911,7 @@ export default function CustomerApp() {
               <Text style={{color: '#fff', fontSize: 10, fontWeight: 'bold'}}>💳 Pay Now</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => {
-              fetch(`${API_BASE}/orders-manager?orderId=${orderId}`).then(r => r.json()).then(ord => {
+              customerFetch(`/orders-manager?orderId=${encodeURIComponent(orderId)}`).then(r => r.json()).then(ord => {
                 if (ord && ord.paymentVerified === true) {
                   Alert.alert("Verified", "Payment verified and order confirmed!");
                   fetchCustomerOrders(custPhone);
@@ -1014,9 +1030,15 @@ export default function CustomerApp() {
           <View style={s.loginCard}>
             <Text style={{fontSize: 40, marginBottom: 8, textAlign: 'center'}}>🛒✨</Text>
             <Text style={s.lockTitle}>{storeSettings.store}</Text>
-            <Text style={{fontSize: 11, color: '#666', textAlign: 'center', marginBottom: 15}}>Enter 10-digit mobile number to enter store:</Text>
+            <Text style={{fontSize: 11, color: '#666', textAlign: 'center', marginBottom: 15}}>Login with your registered mobile number and password:</Text>
             <TextInput style={s.lockInput} placeholder="10-digit Phone" keyboardType="numeric" maxLength={10} value={loginPhoneInput} onChangeText={setLoginPhoneInput} />
-            <TouchableOpacity style={s.lockBtn} onPress={handleLogin}><Text style={s.lockBtnTxt}>🚀 Enter Store Now</Text></TouchableOpacity>
+            <TextInput style={s.lockInput} placeholder="Password (8+ characters)" secureTextEntry value={loginPasswordInput} onChangeText={setLoginPasswordInput} />
+            <TouchableOpacity style={[s.lockBtn, loggingIn && { opacity: 0.6 }]} onPress={handleLogin} disabled={loggingIn}>
+              <Text style={s.lockBtnTxt}>{loggingIn ? "🔐 Logging In..." : "🔐 Login Securely"}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => Alert.alert('Forgot Password', 'Please contact the store/admin to set a temporary password. The app does not allow password reset using only a mobile number.')} style={{padding: 10, alignItems: 'center'}}>
+              <Text style={{fontSize: 10.5, color: '#6a1b9a', fontWeight: 'bold'}}>Forgot Password?</Text>
+            </TouchableOpacity>
             
             <TouchableOpacity onPress={() => setShowLegalModal(true)} style={s.policyInteractiveBtnSec}>
               <Text style={{fontSize: 10.5, color: '#fff', fontWeight: 'bold', textAlign: 'center'}}>📄 Terms, Privacy & Refund Policy</Text>
@@ -1394,7 +1416,31 @@ export default function CustomerApp() {
               )}
             </View>
 
-            {/* SECTION 3: STORE POLICIES & LEGAL */}
+            {/* SECTION 3: PASSWORD SECURITY */}
+            <View style={s.card}>
+              <Text style={s.secTitle}>🔐 Password Security</Text>
+              {!showChangePassword ? (
+                <TouchableOpacity style={[s.btn, {backgroundColor: '#4a148c'}]} onPress={() => setShowChangePassword(true)}>
+                  <Text style={s.btnTxt}>Change My Password</Text>
+                </TouchableOpacity>
+              ) : (
+                <View>
+                  <Text style={s.lbl}>Current Password:</Text>
+                  <TextInput style={s.i} secureTextEntry value={oldPasswordInput} onChangeText={setOldPasswordInput} placeholder="Current password" />
+                  <Text style={s.lbl}>New Password:</Text>
+                  <TextInput style={s.i} secureTextEntry value={newPasswordInput} onChangeText={setNewPasswordInput} placeholder="New password (8+ characters)" />
+                  <TouchableOpacity style={[s.btn, {backgroundColor: '#2e7d32', opacity: savingPassword ? 0.6 : 1}]} disabled={savingPassword} onPress={changeCustomerPassword}>
+                    <Text style={s.btnTxt}>{savingPassword ? 'Updating...' : 'Update Password'}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[s.btn, {backgroundColor: '#777'}]} onPress={() => {setShowChangePassword(false); setOldPasswordInput(''); setNewPasswordInput('');}}>
+                    <Text style={s.btnTxt}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              <Text style={{fontSize: 9.5, color: '#777', marginTop: 5}}>Forgot your password? Please contact the store/admin. For security, the app does not reset a password using only a mobile number.</Text>
+            </View>
+
+            {/* SECTION 4: STORE POLICIES & LEGAL */}
             <View style={s.card}>
               <Text style={s.secTitle}>📜 Store Policies & Legal Terms</Text>
               <Text style={{fontSize: 9.5, color: '#666', marginBottom: 6}}>
