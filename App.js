@@ -72,12 +72,16 @@ export default function CustomerApp() {
   const [newPasswordInput, setNewPasswordInput] = useState('');
   const [savingPassword, setSavingPassword] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showOldPassword, setShowOldPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
 
   const [showSignup, setShowSignup] = useState(false);
   const [signupNameInput, setSignupNameInput] = useState('');
   const [signupPhoneInput, setSignupPhoneInput] = useState('');
   const [signupPasswordInput, setSignupPasswordInput] = useState('');
   const [signingUp, setSigningUp] = useState(false);
+  const [showSignupPassword, setShowSignupPassword] = useState(false);
 
   const [deliveryType, setDeliveryType] = useState('Normal');
   const [deliveryShift, setDeliveryShift] = useState('Morning (8 AM - 11 AM)');
@@ -99,7 +103,7 @@ export default function CustomerApp() {
 
   // Wraps fetch with a timeout so a slow/cold Vercel function fails fast
   // instead of leaving the UI looking "stuck" with no feedback.
-  const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
+  const fetchWithTimeout = async (url, options = {}, timeoutMs = 30000) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -1096,7 +1100,12 @@ export default function CustomerApp() {
               <>
                 <Text style={{fontSize: 11, color: '#666', textAlign: 'center', marginBottom: 15}}>Login with your registered mobile number and password:</Text>
                 <TextInput style={s.lockInput} placeholder="10-digit Phone" keyboardType="numeric" maxLength={10} value={loginPhoneInput} onChangeText={setLoginPhoneInput} />
-                <TextInput style={s.lockInput} placeholder="Password (8+ characters)" secureTextEntry value={loginPasswordInput} onChangeText={setLoginPasswordInput} />
+                <View style={{width: '100%', justifyContent: 'center'}}>
+                  <TextInput style={[s.lockInput, {paddingRight: 40}]} placeholder="Password (8+ characters)" secureTextEntry={!showLoginPassword} value={loginPasswordInput} onChangeText={setLoginPasswordInput} />
+                  <TouchableOpacity onPress={() => setShowLoginPassword(v => !v)} style={{position: 'absolute', right: 10, top: 0, bottom: 12, justifyContent: 'center'}}>
+                    <Text style={{fontSize: 16}}>{showLoginPassword ? '🙈' : '👁️'}</Text>
+                  </TouchableOpacity>
+                </View>
                 <TouchableOpacity style={[s.lockBtn, loggingIn && { opacity: 0.6 }]} onPress={handleLogin} disabled={loggingIn}>
                   <Text style={s.lockBtnTxt}>{loggingIn ? "🔐 Logging In..." : "🔐 Login Securely"}</Text>
                 </TouchableOpacity>
@@ -1112,7 +1121,12 @@ export default function CustomerApp() {
                 <Text style={{fontSize: 11, color: '#666', textAlign: 'center', marginBottom: 15}}>Create your account to start ordering:</Text>
                 <TextInput style={s.lockInput} placeholder="Full Name" value={signupNameInput} onChangeText={setSignupNameInput} />
                 <TextInput style={s.lockInput} placeholder="10-digit Phone" keyboardType="numeric" maxLength={10} value={signupPhoneInput} onChangeText={setSignupPhoneInput} />
-                <TextInput style={s.lockInput} placeholder="Password (8+ characters)" secureTextEntry value={signupPasswordInput} onChangeText={setSignupPasswordInput} />
+                <View style={{width: '100%', justifyContent: 'center'}}>
+                  <TextInput style={[s.lockInput, {paddingRight: 40}]} placeholder="Password (8+ characters)" secureTextEntry={!showSignupPassword} value={signupPasswordInput} onChangeText={setSignupPasswordInput} />
+                  <TouchableOpacity onPress={() => setShowSignupPassword(v => !v)} style={{position: 'absolute', right: 10, top: 0, bottom: 12, justifyContent: 'center'}}>
+                    <Text style={{fontSize: 16}}>{showSignupPassword ? '🙈' : '👁️'}</Text>
+                  </TouchableOpacity>
+                </View>
                 <TouchableOpacity style={[s.lockBtn, signingUp && { opacity: 0.6 }]} onPress={handleSignup} disabled={signingUp}>
                   <Text style={s.lockBtnTxt}>{signingUp ? "✨ Creating Account..." : "✨ Create Account"}</Text>
                 </TouchableOpacity>
@@ -1508,9 +1522,19 @@ export default function CustomerApp() {
               ) : (
                 <View>
                   <Text style={s.lbl}>Current Password:</Text>
-                  <TextInput style={s.i} secureTextEntry value={oldPasswordInput} onChangeText={setOldPasswordInput} placeholder="Current password" />
+                  <View style={{width: '100%', justifyContent: 'center'}}>
+                    <TextInput style={[s.i, {paddingRight: 36}]} secureTextEntry={!showOldPassword} value={oldPasswordInput} onChangeText={setOldPasswordInput} placeholder="Current password" />
+                    <TouchableOpacity onPress={() => setShowOldPassword(v => !v)} style={{position: 'absolute', right: 8, top: 0, bottom: 2, justifyContent: 'center'}}>
+                      <Text style={{fontSize: 15}}>{showOldPassword ? '🙈' : '👁️'}</Text>
+                    </TouchableOpacity>
+                  </View>
                   <Text style={s.lbl}>New Password:</Text>
-                  <TextInput style={s.i} secureTextEntry value={newPasswordInput} onChangeText={setNewPasswordInput} placeholder="New password (8+ characters)" />
+                  <View style={{width: '100%', justifyContent: 'center'}}>
+                    <TextInput style={[s.i, {paddingRight: 36}]} secureTextEntry={!showNewPassword} value={newPasswordInput} onChangeText={setNewPasswordInput} placeholder="New password (8+ characters)" />
+                    <TouchableOpacity onPress={() => setShowNewPassword(v => !v)} style={{position: 'absolute', right: 8, top: 0, bottom: 2, justifyContent: 'center'}}>
+                      <Text style={{fontSize: 15}}>{showNewPassword ? '🙈' : '👁️'}</Text>
+                    </TouchableOpacity>
+                  </View>
                   <TouchableOpacity style={[s.btn, {backgroundColor: '#2e7d32', opacity: savingPassword ? 0.6 : 1}]} disabled={savingPassword} onPress={changeCustomerPassword}>
                     <Text style={s.btnTxt}>{savingPassword ? 'Updating...' : 'Update Password'}</Text>
                   </TouchableOpacity>
