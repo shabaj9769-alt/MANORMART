@@ -73,6 +73,12 @@ export default function CustomerApp() {
   const [savingPassword, setSavingPassword] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
 
+  const [showSignup, setShowSignup] = useState(false);
+  const [signupNameInput, setSignupNameInput] = useState('');
+  const [signupPhoneInput, setSignupPhoneInput] = useState('');
+  const [signupPasswordInput, setSignupPasswordInput] = useState('');
+  const [signingUp, setSigningUp] = useState(false);
+
   const [deliveryType, setDeliveryType] = useState('Normal');
   const [deliveryShift, setDeliveryShift] = useState('Morning (8 AM - 11 AM)');
   const [paymentMode, setPaymentMode] = useState('COD');
@@ -629,6 +635,57 @@ export default function CustomerApp() {
     }
   };
 
+  const handleSignup = async () => {
+    if (signingUp) return; // guard against double-tap firing two requests
+    const cleanName = sanitizeInput(signupNameInput);
+    const cleanPh = (signupPhoneInput || '').replace(/[^0-9]/g, '').trim();
+    if (!cleanName) return Alert.alert("Name Required", "Please enter your full name.");
+    if (cleanPh.length !== 10) return Alert.alert("Invalid Phone", "Please enter a valid 10-digit mobile number.");
+    if (!signupPasswordInput || signupPasswordInput.length < 8) return Alert.alert("Password Required", "Password must be at least 8 characters.");
+    setSigningUp(true);
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/customer-signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: cleanPh, password: signupPasswordInput, name: cleanName })
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 409) {
+        // Server says a password already exists for this number.
+        return Alert.alert("Account Exists", data.error || "An account already exists for this number. Please log in instead.");
+      }
+      if (!res.ok || !data.token) {
+        // Server reached, but something else went wrong (500, malformed response, etc.)
+        return Alert.alert("Sign Up Failed", data.error || "Something went wrong on our end. Please try again in a moment.");
+      }
+
+      await AsyncStorage.setItem(CUSTOMER_TOKEN_KEY, data.token);
+      await AsyncStorage.setItem('manor_cust_phone', cleanPh);
+      sessionExpiredAlertShownRef.current = false;
+      setCustPhone(cleanPh);
+      setIsLoggedIn(true);
+      setSignupPasswordInput('');
+      const userData = data.customer || {};
+      const finalName = userData.name || cleanName;
+      if (finalName) { setCustName(finalName); await AsyncStorage.setItem('manor_cust_name', finalName); }
+      if (userData.addr) { setCustAddr(userData.addr); await AsyncStorage.setItem('manor_cust_addr', userData.addr); }
+      if (Array.isArray(userData.addresses)) { setSavedAddresses(userData.addresses); await AsyncStorage.setItem('manor_cust_addrs_list', JSON.stringify(userData.addresses)); }
+      registerForPushNotifications(cleanPh);
+      fetchCustomerOrders(cleanPh);
+      setShowSignup(false);
+      Alert.alert("Welcome", "Account created successfully!");
+    } catch (e) {
+      if (e && e.name === 'AbortError') {
+        Alert.alert("Timed Out", "The server took too long to respond. Please try again.");
+      } else {
+        Alert.alert("Network Error", "Unable to sign up. Please check your internet connection and try again.");
+      }
+    } finally {
+      setSigningUp(false);
+    }
+  };
+
   const fetchCustomerOrders = (phone) => {
     if (!phone) return;
     customerFetch(`/orders-manager?phone=${encodeURIComponent(phone)}`)
@@ -1030,16 +1087,36 @@ export default function CustomerApp() {
           <View style={s.loginCard}>
             <Text style={{fontSize: 40, marginBottom: 8, textAlign: 'center'}}>🛒✨</Text>
             <Text style={s.lockTitle}>{storeSettings.store}</Text>
-            <Text style={{fontSize: 11, color: '#666', textAlign: 'center', marginBottom: 15}}>Login with your registered mobile number and password:</Text>
-            <TextInput style={s.lockInput} placeholder="10-digit Phone" keyboardType="numeric" maxLength={10} value={loginPhoneInput} onChangeText={setLoginPhoneInput} />
-            <TextInput style={s.lockInput} placeholder="Password (8+ characters)" secureTextEntry value={loginPasswordInput} onChangeText={setLoginPasswordInput} />
-            <TouchableOpacity style={[s.lockBtn, loggingIn && { opacity: 0.6 }]} onPress={handleLogin} disabled={loggingIn}>
-              <Text style={s.lockBtnTxt}>{loggingIn ? "🔐 Logging In..." : "🔐 Login Securely"}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => Alert.alert('Forgot Password', 'Please contact the store/admin to set a temporary password. The app does not allow password reset using only a mobile number.')} style={{padding: 10, alignItems: 'center'}}>
-              <Text style={{fontSize: 10.5, color: '#6a1b9a', fontWeight: 'bold'}}>Forgot Password?</Text>
-            </TouchableOpacity>
-            
+            {!showSignup ? (
+              <>
+                <Text style={{fontSize: 11, color: '#666', textAlign: 'center', marginBottom: 15}}>Login with your registered mobile number and password:</Text>
+                <TextInput style={s.lockInput} placeholder="10-digit Phone" keyboardType="numeric" maxLength={10} value={loginPhoneInput} onChangeText={setLoginPhoneInput} />
+                <TextInput style={s.lockInput} placeholder="Password (8+ characters)" secureTextEntry value={loginPasswordInput} onChangeText={setLoginPasswordInput} />
+                <TouchableOpacity style={[s.lockBtn, loggingIn && { opacity: 0.6 }]} onPress={handleLogin} disabled={loggingIn}>
+                  <Text style={s.lockBtnTxt}>{loggingIn ? "🔐 Logging In..." : "🔐 Login Securely"}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => Alert.alert('Forgot Password', 'Please contact the store/admin to set a temporary password. The app does not allow password reset using only a mobile number.')} style={{padding: 10, alignItems: 'center'}}>
+                  <Text style={{fontSize: 10.5, color: '#6a1b9a', fontWeight: 'bold'}}>Forgot Password?</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setShowSignup(true)} style={{padding: 10, alignItems: 'center'}}>
+                  <Text style={{fontSize: 11, color: '#2e7d32', fontWeight: 'bold'}}>New here? Create an Account</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <Text style={{fontSize: 11, color: '#666', textAlign: 'center', marginBottom: 15}}>Create your account to start ordering:</Text>
+                <TextInput style={s.lockInput} placeholder="Full Name" value={signupNameInput} onChangeText={setSignupNameInput} />
+                <TextInput style={s.lockInput} placeholder="10-digit Phone" keyboardType="numeric" maxLength={10} value={signupPhoneInput} onChangeText={setSignupPhoneInput} />
+                <TextInput style={s.lockInput} placeholder="Password (8+ characters)" secureTextEntry value={signupPasswordInput} onChangeText={setSignupPasswordInput} />
+                <TouchableOpacity style={[s.lockBtn, signingUp && { opacity: 0.6 }]} onPress={handleSignup} disabled={signingUp}>
+                  <Text style={s.lockBtnTxt}>{signingUp ? "✨ Creating Account..." : "✨ Create Account"}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setShowSignup(false)} style={{padding: 10, alignItems: 'center'}}>
+                  <Text style={{fontSize: 11, color: '#6a1b9a', fontWeight: 'bold'}}>Already have an account? Log In</Text>
+                </TouchableOpacity>
+              </>
+            )}
+
             <TouchableOpacity onPress={() => setShowLegalModal(true)} style={s.policyInteractiveBtnSec}>
               <Text style={{fontSize: 10.5, color: '#fff', fontWeight: 'bold', textAlign: 'center'}}>📄 Terms, Privacy & Refund Policy</Text>
             </TouchableOpacity>
