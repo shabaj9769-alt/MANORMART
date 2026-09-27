@@ -576,13 +576,18 @@ export default function CustomerApp() {
     return { validated, notes };
   };
 
-  const openPaymentPage = (orderId) => {
+  const openPaymentPage = async (orderId) => {
     // Only ever open OUR payment page. A tampered settings.upi value can never redirect customers elsewhere.
     const TRUSTED_PAY_HOST = 'https://shabaj9769-alt.github.io/';
     const custom = (storeSettings.upi || '').trim();
     const base = custom.startsWith(TRUSTED_PAY_HOST) ? custom : TRUSTED_PAY_HOST + 'manormart-pay/';
     AsyncStorage.setItem('manor_pending_ord', orderId).catch(() => {});
-    Linking.openURL(`${base}?order_id=${encodeURIComponent(orderId)}`).catch(() => {
+    const token = await AsyncStorage.getItem(CUSTOMER_TOKEN_KEY);
+    if (!token) {
+      return Alert.alert("Please log in again", "Please log in and tap Pay Now again.");
+    }
+    const url = `${base}?order_id=${encodeURIComponent(orderId)}&token=${encodeURIComponent(token)}`;
+    Linking.openURL(url).catch(() => {
       Alert.alert("Error", "Unable to open payment checkout page.");
     });
   };
