@@ -1,0 +1,49 @@
+{
+  "project_info": {
+    "project_number": "556689886625",
+    "firebase_url": "https://manorbiryani-default-rtdb.firebaseio.com",
+    "project_id": "manorbiryani",
+    "storage_bucket": "manorbiryani.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:556689886625:android:0190e7e77c6c9313114fe0",
+        "android_client_info": {
+          "package_name": "com.manormart.delivery"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCUnDglv7JwEgy57VJVyzT8fVLecGY1oeM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:556689886625:android:fca74070914b938e114fe0",
+        "android_client_info": {
+          "package_name": "com.shabaj.manormartapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCUnDglv7JwEgy57VJVyzT8fVLecGY1oeM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
