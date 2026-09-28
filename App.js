@@ -1215,7 +1215,6 @@ export default function CustomerApp() {
       <View style={[s.hdr, activeTab !== 'shop' && { borderBottomLeftRadius: 22, borderBottomRightRadius: 22, paddingBottom: 16 }]}>
         <View style={s.hdrTop}>
           <View style={{flex: 1, paddingRight: 8}}>
-            <Text style={s.hdrEta}>⚡ Delivery in {storeSettings.expDeliveryTime}</Text>
             <TouchableOpacity onPress={() => setActiveTab('profile')} activeOpacity={0.7}>
               <Text style={s.hdrAddr} numberOfLines={1}>{custAddr ? custAddr : 'Add delivery address'} ▾</Text>
             </TouchableOpacity>
@@ -1329,11 +1328,18 @@ export default function CustomerApp() {
 
                         return (
                           <View key={`${pr.catName}_${pr.id}`} style={[s.gridCard, isSoldOut && {opacity: 0.55}]}>
-                            {Number(pr.discount || 0) > 0 && Number(pr.price) > 0 && (
-                              <View style={s.offBadge}>
-                                <Text style={s.offBadgeTxt}>{Math.round((Number(pr.discount) / Number(pr.price)) * 100)}% OFF</Text>
-                              </View>
-                            )}
+                            {Number(pr.discount || 0) > 0 && Number(pr.price) > 0 && (() => {
+                              const catPct = Number(categories[pr.catName]?.discountPercent || 0);
+                              const expected = Math.round((Number(pr.price) * catPct) / 100);
+                              const pct = (catPct > 0 && Number(pr.discount) === expected)
+                                ? catPct
+                                : Math.round((Number(pr.discount) / Number(pr.price)) * 100);
+                              return (
+                                <View style={s.offBadge}>
+                                  <Text style={s.offBadgeTxt}>{pct}% OFF</Text>
+                                </View>
+                              );
+                            })()}
                             {pr.image && typeof pr.image === 'string' && pr.image.trim().startsWith('http') ? (
                               <Image source={{ uri: pr.image.trim() }} style={s.gridImg} />
                             ) : (
@@ -1341,7 +1347,6 @@ export default function CustomerApp() {
                                 <Text style={{fontSize: 30}}>📦</Text>
                               </View>
                             )}
-                            <View style={s.etaChip}><Text style={s.etaChipTxt}>⚡ {storeSettings.expDeliveryTime}</Text></View>
                             <View style={{flex: 1, width: '100%', marginTop: 6}}>
                               <Text style={{fontWeight: '700', fontSize: 12.5, color: '#1c1c1c'}} numberOfLines={2}>{pr.name || 'Product'}</Text>
                               <Text style={{fontSize: 10.5, color: '#7a7a7a', marginTop: 2}}>{pr.unit || ''}</Text>
@@ -1683,7 +1688,7 @@ export default function CustomerApp() {
           </View>
           <ScrollView style={{padding: 10, width: '100%'}} contentContainerStyle={{paddingBottom: 35 + SAFE_BOTTOM}}>
             <View style={{backgroundColor: '#e3f6e8', borderRadius: 14, padding: 12, marginBottom: 10}}>
-              <Text style={{color: '#1b8a3a', fontWeight: '800', fontSize: 13}}>⚡ Delivery in {storeSettings.expDeliveryTime}</Text>
+              <Text style={{color: '#1b8a3a', fontWeight: '800', fontSize: 13}}>🛒 Your Cart</Text>
               <Text style={{color: '#3d7a4d', fontSize: 11, marginTop: 2}}>{cartItemsList.reduce((sum, i) => sum + i.qty, 0)} items in your cart</Text>
             </View>
             <View style={s.card}>
