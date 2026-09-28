@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   StyleSheet, Text, View, TextInput, TouchableOpacity, 
   ScrollView, Alert, SafeAreaView, Modal, Image, 
-  Platform, BackHandler, Linking 
+  Platform, BackHandler, Linking, Dimensions 
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
@@ -13,6 +13,11 @@ import * as Device from 'expo-device';
 // Customer App talks to the Vercel backend only. No direct Firebase client access.
 const API_BASE = "https://manormart-pay.vercel.app/api";
 const CUSTOMER_TOKEN_KEY = 'manor_customer_session';
+const BANNER_W = Dimensions.get('window').width - 24;
+// Bottom inset so our nav bar sits above the phone's Android navigation buttons
+let SAFE_BOTTOM = 0;
+try { SAFE_BOTTOM = require('react-native-safe-area-context').initialWindowMetrics?.insets?.bottom || 0; } catch (e) {}
+if (Platform.OS === 'android' && SAFE_BOTTOM < 24) SAFE_BOTTOM = 48;
 
 // Foreground Notification handling
 Notifications.setNotificationHandler({
@@ -99,6 +104,26 @@ export default function CustomerApp() {
   const custPhoneRef = useRef('');
   const placingRef = useRef(false);
   const [placing, setPlacing] = useState(false);
+  const [hiddenOrderIds, setHiddenOrderIds] = useState([]);
+  useEffect(() => {
+    AsyncStorage.getItem('manor_hidden_orders').then(v => { if (v) setHiddenOrderIds(JSON.parse(v)); }).catch(() => {});
+  }, []);
+  const bannerRef = useRef(null);
+  const bannerIdxRef = useRef(0);
+  const [bannerIdx, setBannerIdx] = useState(0);
+
+  // Auto-slide banners every 3.5s
+  useEffect(() => {
+    const n = [storeSettings.b1, storeSettings.b2, storeSettings.b3].filter(b => b && b.trim().startsWith('http')).length;
+    if (n < 2) return;
+    const t = setInterval(() => {
+      const next = (bannerIdxRef.current + 1) % n;
+      bannerIdxRef.current = next;
+      setBannerIdx(next);
+      bannerRef.current?.scrollTo({ x: next * BANNER_W, animated: true });
+    }, 3500);
+    return () => clearInterval(t);
+  }, [storeSettings.b1, storeSettings.b2, storeSettings.b3]);
   const sessionExpiredAlertShownRef = useRef(false);
 
   // Wraps fetch with a timeout so a slow/cold Vercel function fails fast
@@ -229,7 +254,7 @@ export default function CustomerApp() {
         if (finalStatus !== 'granted') return;
 
         const tokenData = await Notifications.getExpoPushTokenAsync({
-          projectId: "35fa08b6-386b-4e9d-82d9-940962809197"
+          projectId: "9fd5f86d-9fcb-4946-b620-765d0f2f828a"
         });
 
         if (tokenData?.data) {
@@ -798,7 +823,15 @@ export default function CustomerApp() {
         Alert.alert("Order Cancelled", paymentModeVal === 'Online' && !currentStatus?.includes('Payment Pending')
           ? "Your order has been cancelled. For online prepaid orders, the refund will be credited back to your original payment method within 5 to 7 business days."
           : "Your order has been cancelled successfully.");
-      }).catch((e) => Alert.alert("Error", e.message || "Network error. Please try again."));
+      }).catch((e) => {
+        if (e && e.name === 'AbortError') {
+          // Server did not reply in time - it may still have processed the cancel, so re-check.
+          fetchCustomerOrders(custPhone);
+          Alert.alert("Server is slow", "Cancel request timed out. Please check the order status in a moment, and try again if it is still active.");
+        } else {
+          Alert.alert("Error", e.message || "Network error. Please try again.");
+        }
+      });
     } else {
       setCancelStepOrder(orderId);
       setTimeout(() => setCancelStepOrder(null), 4000);
@@ -807,9 +840,15 @@ export default function CustomerApp() {
 
   const confirmDeleteOrder = (orderId) => {
     if (deleteStepOrder === orderId) {
-      // Order deletion is intentionally not exposed to customers. Keep the history intact.
       setDeleteStepOrder(null);
-      Alert.alert("Not Available", "Orders cannot be deleted from your account history.");
+      const ord = (myOrders || []).find(o => o.id === orderId);
+      const st = ord?.deliveryStatus || '';
+      if (!st.includes('Cancelled') && !st.includes('Delivered')) {
+        return Alert.alert("Order is active", "Cancel the order first, or wait until it is delivered. Then you can remove it from your list.");
+      }
+      const updated = [...hiddenOrderIds, orderId];
+      setHiddenOrderIds(updated);
+      AsyncStorage.setItem('manor_hidden_orders', JSON.stringify(updated)).catch(() => {});
     } else {
       setDeleteStepOrder(orderId);
       setTimeout(() => setDeleteStepOrder(null), 4000);
@@ -1173,40 +1212,19 @@ export default function CustomerApp() {
       {renderTermsModal()}
       {renderInAppLegalModal()}
 
-      <View style={s.hdr}>
-        <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%', marginBottom: 6}}>
-          <View style={{flex: 1, paddingRight: 6}}>
-            <Text style={s.ht} numberOfLines={1}>🛒 {storeSettings.store}</Text>
-            <Text style={{fontSize: 10, color: '#ffd54f', fontWeight: 'bold', marginTop: 2}} numberOfLines={1}>
-              📍 Delivery to: {custAddr ? custAddr : 'Not Set'}
-            </Text>
-          </View>
-          <View style={{flexDirection: 'row', alignItems: 'center'}}>
-            <TouchableOpacity onPress={() => detectGPSAndLoadStore(true)} style={{backgroundColor: '#7b1fa2', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, marginRight: 6}}>
-              <Text style={{fontSize: 9.5, color: '#fff', fontWeight: 'bold'}}>🔄 GPS</Text>
+      <View style={[s.hdr, activeTab !== 'shop' && { borderBottomLeftRadius: 22, borderBottomRightRadius: 22, paddingBottom: 16 }]}>
+        <View style={s.hdrTop}>
+          <View style={{flex: 1, paddingRight: 8}}>
+            <Text style={s.hdrEta}>⚡ Delivery in {storeSettings.expDeliveryTime}</Text>
+            <TouchableOpacity onPress={() => setActiveTab('profile')} activeOpacity={0.7}>
+              <Text style={s.hdrAddr} numberOfLines={1}>{custAddr ? custAddr : 'Add delivery address'} ▾</Text>
             </TouchableOpacity>
-            <View style={{backgroundColor: '#2e7d32', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6}}>
-              <Text style={{fontSize: 9.5, color: '#fff', fontWeight: 'bold'}} numberOfLines={1}>
-                {gpsStatus}
-              </Text>
-            </View>
           </View>
+          <TouchableOpacity onPress={() => detectGPSAndLoadStore(true)} style={s.gpsPill} activeOpacity={0.7}>
+            <Text style={{fontSize: 10.5, color: '#4a148c', fontWeight: '800'}} numberOfLines={1}>📍 {gpsStatus}</Text>
+          </TouchableOpacity>
         </View>
-
-        <View style={{flexDirection: 'row', width: '100%', justifyContent: 'space-between'}}>
-          {[
-            { key: 'shop', label: '🛍️ Shop' },
-            { key: 'orders', label: '📦 Orders' },
-            { key: 'profile', label: '⚙️ Profile' },
-            { key: 'exit', label: '🚪 Exit', action: handleExitApp }
-          ].filter(t => t.key !== 'exit' || Platform.OS === 'android').map(t => (
-            <TouchableOpacity key={t.key} onPress={t.action ? t.action : () => { setActiveTab(t.key); if(t.key==='orders') fetchCustomerOrders(custPhone); }} style={[s.headerTabBtn, activeTab === t.key && s.headerTabAct, t.key === 'exit' && {backgroundColor: '#c62828'}]}>
-              <Text style={{fontSize: 9.5, fontWeight: 'bold', color: t.key === 'exit' ? '#fff' : (activeTab === t.key ? '#6a1b9a' : '#fff'), textAlign: 'center'}} numberOfLines={1}>
-                {t.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        <Text style={s.hdrStore}>{storeSettings.store}</Text>
       </View>
 
       {storeSettings.storeOpen === false && (
@@ -1217,16 +1235,21 @@ export default function CustomerApp() {
 
       {activeTab === 'shop' && (
         <View style={s.stickySearchContainer}>
-          <TextInput 
-            style={s.searchBar} 
-            placeholder="🔍 Search groceries (e.g. Rice, Kaju, Tomato)..." 
-            value={searchQuery} 
-            onChangeText={setSearchQuery} 
-          />
+          <View style={s.searchWrap}>
+            <Text style={{fontSize: 15, marginRight: 8}}>🔍</Text>
+            <TextInput 
+              style={s.searchInput} 
+              placeholder='Search "rice", "kaju", "tomato"' 
+              placeholderTextColor="#9a9a9a"
+              value={searchQuery} 
+              onChangeText={setSearchQuery} 
+            />
+            {searchQuery ? <TouchableOpacity onPress={() => setSearchQuery('')}><Text style={{fontSize: 16, color: '#888', paddingHorizontal: 4}}>✕</Text></TouchableOpacity> : null}
+          </View>
         </View>
       )}
 
-      <ScrollView style={s.body} contentContainerStyle={{ paddingBottom: 150, width: '100%', paddingHorizontal: 8 }}>
+      <ScrollView style={s.body} contentContainerStyle={{ paddingBottom: 170 + SAFE_BOTTOM, width: '100%', paddingHorizontal: 8 }}>
         {activeTab === 'shop' && (
           <View style={{width: '100%'}}>
             {storeSettings.adminNote ? (
@@ -1236,33 +1259,46 @@ export default function CustomerApp() {
             ) : null}
 
             {!selectedCat && !searchQuery && bannerList.length > 0 ? (
-              <View style={s.bannerVerticalContainer}>
-                {bannerList.map((bannerUrl, idx) => (
-                  <Image key={idx} source={{ uri: bannerUrl }} style={s.bannerVerticalImg} />
-                ))}
+              <View style={{marginTop: 10, marginBottom: 6}}>
+                <ScrollView
+                  ref={bannerRef}
+                  horizontal
+                  pagingEnabled
+                  showsHorizontalScrollIndicator={false}
+                  onMomentumScrollEnd={e => { bannerIdxRef.current = Math.round(e.nativeEvent.contentOffset.x / BANNER_W); setBannerIdx(bannerIdxRef.current); }}
+                  style={{borderRadius: 18}}
+                >
+                  {bannerList.map((bannerUrl, idx) => (
+                    <Image key={idx} source={{ uri: bannerUrl }} style={{width: BANNER_W, height: 150, borderRadius: 18, resizeMode: 'cover'}} />
+                  ))}
+                </ScrollView>
+                {bannerList.length > 1 && (
+                  <View style={s.dotsRow}>
+                    {bannerList.map((_, i) => <View key={i} style={[s.dot, i === bannerIdx && s.dotAct]} />)}
+                  </View>
+                )}
               </View>
             ) : null}
 
             {!selectedCat && !searchQuery ? (
-              <View style={{width: '100%', marginBottom: 12, marginTop: 4}}>
-                <Text style={{fontSize: 13, fontWeight: 'bold', color: '#222', marginBottom: 8}}>📂 Grocery & Kitchen Categories</Text>
+              <View style={{width: '100%', marginBottom: 12, marginTop: 8}}>
+                <Text style={s.sectionHead}>Shop by category</Text>
                 <View style={s.catGridContainer}>
                   {Object.keys(categories || {}).map((catName, idx) => {
                     const catObj = categories[catName];
                     const catImgUrl = catObj?.image && typeof catObj.image === 'string' && catObj.image.trim().startsWith('http') 
                       ? catObj.image.trim() 
                       : null;
-
                     return (
-                      <TouchableOpacity key={idx} onPress={() => setSelectedCat(catName)} style={s.instamartCatCard}>
+                      <TouchableOpacity key={idx} onPress={() => setSelectedCat(catName)} style={s.instamartCatCard} activeOpacity={0.7}>
                         <View style={s.instamartCatCircle}>
                           {catImgUrl ? (
                             <Image source={{ uri: catImgUrl }} style={s.catCircleImg} />
                           ) : (
-                            <Text style={{fontSize: 22}}>🛍️</Text>
+                            <Text style={{fontSize: 28}}>🛍️</Text>
                           )}
                         </View>
-                        <Text style={{fontSize: 10, fontWeight: 'bold', color: '#333', textAlign: 'center', marginTop: 4}} numberOfLines={2}>{catName}</Text>
+                        <Text style={{fontSize: 10.5, fontWeight: '700', color: '#2b2b2b', textAlign: 'center', marginTop: 6}} numberOfLines={2}>{catName}</Text>
                       </TouchableOpacity>
                     );
                   })}
@@ -1273,8 +1309,8 @@ export default function CustomerApp() {
             {(selectedCat || searchQuery) ? (
               <View style={{width: '100%'}}>
                 <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8}}>
-                  <TouchableOpacity onPress={() => { setSelectedCat(''); setSearchQuery(''); }} style={{backgroundColor: '#6a1b9a', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6}}>
-                    <Text style={{color: '#fff', fontSize: 11, fontWeight: 'bold'}}>← Back to Categories</Text>
+                  <TouchableOpacity onPress={() => { setSelectedCat(''); setSearchQuery(''); }} style={s.backPill}>
+                    <Text style={{color: '#4a148c', fontSize: 12, fontWeight: '800'}}>‹ Back</Text>
                   </TouchableOpacity>
                   <Text style={{fontWeight: 'bold', fontSize: 12, color: '#4a148c'}} numberOfLines={1}>
                     {searchQuery ? `Search: "${searchQuery}"` : `📁 ${selectedCat}`}
@@ -1292,22 +1328,26 @@ export default function CustomerApp() {
                         let isSoldOut = pr.inStock === false;
 
                         return (
-                          <View key={`${pr.catName}_${pr.id}`} style={[s.gridCard, isSoldOut && {backgroundColor: '#f5f5f5'}]}>
+                          <View key={`${pr.catName}_${pr.id}`} style={[s.gridCard, isSoldOut && {opacity: 0.55}]}>
+                            {Number(pr.discount || 0) > 0 && Number(pr.price) > 0 && (
+                              <View style={s.offBadge}>
+                                <Text style={s.offBadgeTxt}>{Math.round((Number(pr.discount) / Number(pr.price)) * 100)}% OFF</Text>
+                              </View>
+                            )}
                             {pr.image && typeof pr.image === 'string' && pr.image.trim().startsWith('http') ? (
                               <Image source={{ uri: pr.image.trim() }} style={s.gridImg} />
                             ) : (
-                              <View style={[s.gridImg, {justifyContent:'center', alignItems:'center', backgroundColor:'#f3e5f5'}]}>
-                                <Text style={{fontSize: 24}}>📦</Text>
+                              <View style={[s.gridImg, {justifyContent:'center', alignItems:'center'}]}>
+                                <Text style={{fontSize: 30}}>📦</Text>
                               </View>
                             )}
-                            
-                            <View style={{flex: 1, justifyContent: 'space-between', width: '100%', marginTop: 4}}>
-                              <Text style={{fontWeight: 'bold', fontSize: 12, color: '#222'}} numberOfLines={2}>{pr.name || 'Product'}</Text>
-                              <Text style={{fontSize: 10, color: '#666', marginVertical: 2}}>{pr.unit || ''}</Text>
-                              
-                              <View style={{flexDirection: 'row', alignItems: 'center', marginVertical: 2}}>
-                                <Text style={{fontWeight: 'bold', color: '#2e7d32', fontSize: 13}}>₹{effPrice}</Text>
-                                {Number(pr.discount || 0) > 0 && <Text style={{fontSize: 9.5, color: '#888', textDecorationLine: 'line-through', marginLeft: 4}}>₹{pr.price}</Text>}
+                            <View style={s.etaChip}><Text style={s.etaChipTxt}>⚡ {storeSettings.expDeliveryTime}</Text></View>
+                            <View style={{flex: 1, width: '100%', marginTop: 6}}>
+                              <Text style={{fontWeight: '700', fontSize: 12.5, color: '#1c1c1c'}} numberOfLines={2}>{pr.name || 'Product'}</Text>
+                              <Text style={{fontSize: 10.5, color: '#7a7a7a', marginTop: 2}}>{pr.unit || ''}</Text>
+                              <View style={{flexDirection: 'row', alignItems: 'center', marginTop: 4, marginBottom: 6}}>
+                                <Text style={{fontWeight: '800', color: '#1c1c1c', fontSize: 14}}>₹{effPrice}</Text>
+                                {Number(pr.discount || 0) > 0 && <Text style={{fontSize: 10.5, color: '#9a9a9a', textDecorationLine: 'line-through', marginLeft: 6}}>₹{pr.price}</Text>}
                               </View>
                             </View>
 
@@ -1320,17 +1360,14 @@ export default function CustomerApp() {
                                 <Text style={{color: '#fff', fontSize: 9.5, fontWeight: 'bold'}}>STORE CLOSED</Text>
                               </View>
                             ) : cartQty === 0 ? (
-                              <TouchableOpacity 
-                                onPress={() => updateCartQty(pr, 1)} 
-                                style={s.gridAddBtn}
-                              >
-                                <Text style={{color: '#fff', fontSize: 11, fontWeight: 'bold'}}>ADD +</Text>
+                              <TouchableOpacity onPress={() => updateCartQty(pr, 1)} style={s.gridAddBtn} activeOpacity={0.7}>
+                                <Text style={{color: '#1b8a3a', fontSize: 12, fontWeight: '800'}}>ADD</Text>
                               </TouchableOpacity>
                             ) : (
                               <View style={s.qtyCon}>
-                                <TouchableOpacity onPress={() => updateCartQty(pr, -1)} style={s.qtyBtn}><Text style={{color:'#fff', fontWeight:'bold', fontSize: 14}}>-</Text></TouchableOpacity>
-                                <Text style={{marginHorizontal: 8, fontWeight: 'bold', fontSize: 12}}>{cartQty}</Text>
-                                <TouchableOpacity onPress={() => updateCartQty(pr, 1)} style={s.qtyBtn}><Text style={{color:'#fff', fontWeight:'bold', fontSize: 14}}>+</Text></TouchableOpacity>
+                                <TouchableOpacity onPress={() => updateCartQty(pr, -1)} style={s.qtyBtn}><Text style={{color:'#fff', fontWeight:'bold', fontSize: 16}}>−</Text></TouchableOpacity>
+                                <Text style={{color:'#fff', fontWeight: '800', fontSize: 13}}>{cartQty}</Text>
+                                <TouchableOpacity onPress={() => updateCartQty(pr, 1)} style={s.qtyBtn}><Text style={{color:'#fff', fontWeight:'bold', fontSize: 16}}>+</Text></TouchableOpacity>
                               </View>
                             )}
                           </View>
@@ -1345,18 +1382,25 @@ export default function CustomerApp() {
         )}
 
         {activeTab === 'orders' && (
-          <View style={s.card}>
-            <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6}}>
-              <Text style={s.secTitle}>📦 Track Orders & Live Timeline</Text>
-              <TouchableOpacity onPress={() => fetchCustomerOrders(custPhone)} style={{backgroundColor: '#e1bee7', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4}}>
-                <Text style={{fontSize: 9.5, fontWeight: 'bold', color: '#6a1b9a'}}>🔄 Refresh</Text>
+          <View style={{width: '100%', marginTop: 10}}>
+            <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8}}>
+              <Text style={s.sectionHead}>Your orders</Text>
+              <TouchableOpacity onPress={() => fetchCustomerOrders(custPhone)} style={s.backPill}>
+                <Text style={{fontSize: 12, fontWeight: '800', color: '#4a148c'}}>🔄 Refresh</Text>
               </TouchableOpacity>
             </View>
 
-            {myOrders.length === 0 ? (
-              <Text style={{textAlign: 'center', color: '#777', padding: 15, fontSize: 11}}>No orders placed yet.</Text>
+            {myOrders.filter(o => !hiddenOrderIds.includes(o.id)).length === 0 ? (
+              <View style={s.emptyBox}>
+                <Text style={{fontSize: 46}}>🛵</Text>
+                <Text style={{fontSize: 16, fontWeight: '800', color: '#1c1c1c', marginTop: 8}}>No orders yet</Text>
+                <Text style={{fontSize: 12, color: '#7a7a7a', marginTop: 4}}>Your orders and live tracking will show up here.</Text>
+                <TouchableOpacity onPress={() => setActiveTab('shop')} style={[s.btn, {width: undefined, paddingHorizontal: 26, backgroundColor: '#1b8a3a'}]}>
+                  <Text style={s.btnTxt}>Start shopping</Text>
+                </TouchableOpacity>
+              </View>
             ) : (
-              myOrders.map(ord => {
+              myOrders.filter(o => !hiddenOrderIds.includes(o.id)).map(ord => {
                 let isDeleting = deleteStepOrder === ord.id;
                 let isCancelling = cancelStepOrder === ord.id;
                 const effStat = effectiveStatus(ord);
@@ -1370,17 +1414,17 @@ export default function CustomerApp() {
                 let boyName = boy?.name || ord.assignedBoy;
 
                 return (
-                  <View key={ord.id} style={[s.card, {borderColor: isWaitingPayment ? '#e65100' : isCancelled ? '#c62828' : '#8e24aa', borderWidth: 1.2, padding: 10, width: '100%'}]}>
+                  <View key={ord.id} style={[s.card, {borderLeftColor: isWaitingPayment ? '#e65100' : isCancelled ? '#c62828' : '#1b8a3a', borderLeftWidth: 5, width: '100%'}]}>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <Text style={{ fontWeight: 'bold', color: '#6a1b9a', fontSize: 12 }}>ORDER #{ord.id.slice(-6)}</Text>
+                      <Text style={{ fontWeight: '800', color: '#1c1c1c', fontSize: 14 }}>Order #{ord.id.slice(-6)}</Text>
                       <View style={{flexDirection: 'row', alignItems: 'center'}}>
                         <View style={{backgroundColor: ord.payment === 'Online' ? '#e1bee7' : '#c8e6c9', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginRight: 6}}>
                           <Text style={{fontSize: 9, fontWeight: 'bold', color: ord.payment === 'Online' ? '#4a148c' : '#1b5e20'}}>
                             {ord.payment === 'Online' ? '💳 Online' : '💵 COD'}
                           </Text>
                         </View>
-                        <Text style={{ fontWeight: 'bold', color: '#2e7d32', marginRight: 6, fontSize: 12 }}>₹{ord.total}</Text>
-                        <TouchableOpacity onPress={() => confirmDeleteOrder(ord.id)} style={{backgroundColor: isDeleting ? '#b71c1c' : '#c62828', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 3}}>
+                        <Text style={{ fontWeight: '800', color: '#1c1c1c', marginRight: 8, fontSize: 14 }}>₹{ord.total}</Text>
+                        <TouchableOpacity onPress={() => confirmDeleteOrder(ord.id)} style={{backgroundColor: isDeleting ? '#b71c1c' : '#c62828', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8}}>
                           <Text style={{color: '#fff', fontSize: 8.5, fontWeight: 'bold'}}>{isDeleting ? '⚠️ Tap' : '🗑️'}</Text>
                         </TouchableOpacity>
                       </View>
@@ -1395,7 +1439,7 @@ export default function CustomerApp() {
                     {renderTimelineTracker(effStat, ord.id, ord.total)}
 
                     {ord.assignedBoy ? (
-                      <View style={{backgroundColor: '#e8f5e9', padding: 10, borderRadius: 8, marginVertical: 6, borderWidth: 1, borderColor: '#a5d6a7'}}>
+                      <View style={{backgroundColor: '#eefaf0', padding: 12, borderRadius: 14, marginVertical: 8, borderWidth: 1, borderColor: '#bfe6c7'}}>
                         <Text style={{fontSize: 10, fontWeight: 'bold', color: '#2e7d32'}}>🛵 Assigned Delivery Partner:</Text>
                         <Text style={{fontSize: 12, fontWeight: 'bold', color: '#1b5e20', marginTop: 2}}>
                           {boyName} {boyPhone ? `(${boyPhone})` : ''}
@@ -1403,7 +1447,7 @@ export default function CustomerApp() {
                         {boyPhone ? (
                           <TouchableOpacity 
                             onPress={() => Linking.openURL(`tel:${boyPhone}`)}
-                            style={{backgroundColor: '#2e7d32', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6, marginTop: 6, alignSelf: 'flex-start'}}
+                            style={{backgroundColor: '#1b8a3a', paddingVertical: 9, paddingHorizontal: 14, borderRadius: 10, marginTop: 8, alignSelf: 'flex-start'}}
                           >
                             <Text style={{color: '#fff', fontSize: 11, fontWeight: 'bold'}}>📞 Call Delivery Partner</Text>
                           </TouchableOpacity>
@@ -1414,9 +1458,9 @@ export default function CustomerApp() {
                     {!isCancelled && !ord.deliveryStatus?.includes('Delivered') && !ord.deliveryStatus?.includes('Out for Delivery') && (
                       <TouchableOpacity 
                         onPress={() => handleCancelOrderAction(ord.id, effStat, ord.payment)} 
-                        style={{backgroundColor: isCancelling ? '#b71c1c' : '#d32f2f', padding: 6, borderRadius: 5, marginVertical: 3, alignItems: 'center'}}
+                        style={{backgroundColor: isCancelling ? '#c62828' : '#fff', borderWidth: 1.5, borderColor: '#c62828', padding: 10, borderRadius: 12, marginVertical: 4, alignItems: 'center'}}
                       >
-                        <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 10.5}}>
+                        <Text style={{color: isCancelling ? '#fff' : '#c62828', fontWeight: '800', fontSize: 12}}>
                           {isCancelling ? '⚠️ Tap Again to Confirm Cancel' : 'Cancel This Order'}
                         </Text>
                       </TouchableOpacity>
@@ -1437,11 +1481,20 @@ export default function CustomerApp() {
 
         {/* --- REORGANIZED & CLEAN PROFILE SETTINGS TAB --- */}
         {activeTab === 'profile' && (
-          <View style={{width: '100%'}}>
-            
+          <View style={{width: '100%', marginTop: 10}}>
+            <View style={[s.card, {flexDirection: 'row', alignItems: 'center'}]}>
+              <View style={s.avatar}>
+                <Text style={{fontSize: 22, fontWeight: '900', color: '#4a148c'}}>{(custName || 'U').trim().charAt(0).toUpperCase()}</Text>
+              </View>
+              <View style={{flex: 1}}>
+                <Text style={{fontSize: 17, fontWeight: '800', color: '#1c1c1c'}} numberOfLines={1}>{custName || 'Your name'}</Text>
+                <Text style={{fontSize: 12, color: '#7a7a7a', marginTop: 2}}>+91 {custPhone}</Text>
+              </View>
+            </View>
+
             {/* SECTION 1: PERSONAL INFORMATION */}
             <View style={s.card}>
-              <Text style={s.secTitle}>👤 Personal Information</Text>
+              <Text style={s.secTitle}>Personal information</Text>
               
               <Text style={s.lbl}>Your Name:</Text>
               <TextInput 
@@ -1468,7 +1521,7 @@ export default function CustomerApp() {
 
             {/* SECTION 2: DELIVERY ADDRESSES */}
             <View style={s.card}>
-              <Text style={s.secTitle}>📍 Delivery Addresses</Text>
+              <Text style={s.secTitle}>Delivery addresses</Text>
               
               <Text style={s.lbl}>Delivery Address:</Text>
               <TextInput 
@@ -1480,10 +1533,10 @@ export default function CustomerApp() {
               />
               
               <TouchableOpacity 
-                style={{backgroundColor: '#7b1fa2', padding: 8, borderRadius: 6, alignItems: 'center', marginTop: 4}} 
+                style={{backgroundColor: '#f3e8fb', padding: 11, borderRadius: 12, alignItems: 'center', marginTop: 6}} 
                 onPress={saveCurrentAddress}
               >
-                <Text style={{color: '#fff', fontSize: 10.5, fontWeight: 'bold'}}>➕ Save This Address</Text>
+                <Text style={{color: '#4a148c', fontSize: 12.5, fontWeight: '800'}}>➕ Save this address</Text>
               </TouchableOpacity>
 
               {savedAddresses.length > 0 && (
@@ -1514,7 +1567,7 @@ export default function CustomerApp() {
 
             {/* SECTION 3: PASSWORD SECURITY */}
             <View style={s.card}>
-              <Text style={s.secTitle}>🔐 Password Security</Text>
+              <Text style={s.secTitle}>Password</Text>
               {!showChangePassword ? (
                 <TouchableOpacity style={[s.btn, {backgroundColor: '#4a148c'}]} onPress={() => setShowChangePassword(true)}>
                   <Text style={s.btnTxt}>Change My Password</Text>
@@ -1594,43 +1647,61 @@ export default function CustomerApp() {
         )}
       </ScrollView>
 
+      <View style={s.bottomNav}>
+        {[
+          { key: 'shop', icon: '🛍️', label: 'Shop' },
+          { key: 'orders', icon: '📦', label: 'Orders' },
+          { key: 'profile', icon: '👤', label: 'Profile' },
+          { key: 'exit', icon: '🚪', label: 'Exit', action: handleExitApp }
+        ].filter(t => t.key !== 'exit' || Platform.OS === 'android').map(t => (
+          <TouchableOpacity key={t.key} onPress={t.action ? t.action : () => { setActiveTab(t.key); if (t.key === 'orders') fetchCustomerOrders(custPhone); }} style={s.navItem} activeOpacity={0.7}>
+            <Text style={{fontSize: 20, opacity: activeTab === t.key || t.key === 'exit' ? 1 : 0.5}}>{t.icon}</Text>
+            <Text style={[s.navLbl, activeTab === t.key && s.navLblAct]}>{t.label}</Text>
+            {activeTab === t.key && <View style={s.navBar} />}
+          </TouchableOpacity>
+        ))}
+      </View>
       {subtotal > 0 && activeTab === 'shop' && storeSettings.storeOpen !== false && (
         <View style={s.floatingCartBar}>
           <View style={{flex: 1, paddingRight: 6}}>
             <Text style={{color: '#fff', fontSize: 10.5, fontWeight: 'bold'}} numberOfLines={1}>{cartItemsList.reduce((sum, i) => sum + i.qty, 0)} Items | ₹{subtotal}</Text>
-            <Text style={{color: '#e1bee7', fontSize: 9}} numberOfLines={1}>All taxes included</Text>
+            <Text style={{color: '#d7f5de', fontSize: 9.5}} numberOfLines={1}>All taxes included</Text>
           </View>
           <TouchableOpacity onPress={() => setActiveTab('cart')} style={s.viewCartBtn}>
-            <Text style={{color: '#6a1b9a', fontWeight: 'bold', fontSize: 11}} numberOfLines={1}>View Cart ➔</Text>
+            <Text style={{color: '#1b8a3a', fontWeight: '800', fontSize: 12}} numberOfLines={1}>View Cart ➔</Text>
           </TouchableOpacity>
         </View>
       )}
 
       <Modal visible={activeTab === 'cart'} animationType="slide" onRequestClose={() => setActiveTab('shop')}>
-        <SafeAreaView style={{flex: 1, backgroundColor: '#fffde7', width: '100%'}}>
-          <View style={s.hdr}>
-            <Text style={s.ht}>🛒 Cart & Secure Checkout</Text>
-            <TouchableOpacity onPress={() => setActiveTab('shop')} style={{backgroundColor: '#7b1fa2', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4}}>
-              <Text style={{color: '#fff', fontSize: 10, fontWeight: 'bold'}}>🔙 Back to Store</Text>
+        <SafeAreaView style={{flex: 1, backgroundColor: '#f6f4f9', width: '100%'}}>
+          <View style={[s.hdr, {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 16, borderBottomLeftRadius: 22, borderBottomRightRadius: 22}]}>
+            <Text style={{color: '#fff', fontSize: 22, fontWeight: '900'}}>My cart</Text>
+            <TouchableOpacity onPress={() => setActiveTab('shop')} style={s.gpsPill}>
+              <Text style={{color: '#4a148c', fontSize: 12, fontWeight: '800'}}>‹ Back to store</Text>
             </TouchableOpacity>
           </View>
-          <ScrollView style={{padding: 10, width: '100%'}} contentContainerStyle={{paddingBottom: 35}}>
+          <ScrollView style={{padding: 10, width: '100%'}} contentContainerStyle={{paddingBottom: 35 + SAFE_BOTTOM}}>
+            <View style={{backgroundColor: '#e3f6e8', borderRadius: 14, padding: 12, marginBottom: 10}}>
+              <Text style={{color: '#1b8a3a', fontWeight: '800', fontSize: 13}}>⚡ Delivery in {storeSettings.expDeliveryTime}</Text>
+              <Text style={{color: '#3d7a4d', fontSize: 11, marginTop: 2}}>{cartItemsList.reduce((sum, i) => sum + i.qty, 0)} items in your cart</Text>
+            </View>
             <View style={s.card}>
-              <Text style={s.secTitle}>🛍️ Review Your Cart</Text>
+              <Text style={s.secTitle}>Review your cart</Text>
               {cartItemsList.map(item => (
                 <View key={item.id} style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6, borderBottomWidth: 0.5, borderColor: '#eee'}}>
                   <View style={{flex: 1, paddingRight: 8}}>
-                    <Text style={{fontWeight: 'bold', fontSize: 11.5}}>{item.name} ({item.unit})</Text>
+                    <Text style={{fontWeight: '700', fontSize: 13, color: '#1c1c1c'}}>{item.name} ({item.unit})</Text>
                     <Text style={{fontSize: 9.5, color: '#666', marginTop: 2}}>₹{round2(item.effectivePrice)} x {item.qty} = ₹{round2(item.effectivePrice * item.qty)}</Text>
                   </View>
                   <View style={{flexDirection: 'row', alignItems: 'center'}}>
                     <View style={s.qtyConCart}>
-                      <TouchableOpacity onPress={() => updateCartQty(item, -1)} style={s.qtyBtn}><Text style={{color:'#fff', fontWeight:'bold', fontSize: 14}}>-</Text></TouchableOpacity>
-                      <Text style={{marginHorizontal: 8, fontWeight: 'bold', fontSize: 11}}>{item.qty}</Text>
+                      <TouchableOpacity onPress={() => updateCartQty(item, -1)} style={s.qtyBtn}><Text style={{color:'#fff', fontWeight:'bold', fontSize: 16}}>−</Text></TouchableOpacity>
+                      <Text style={{marginHorizontal: 6, fontWeight: '800', fontSize: 13, color: '#fff'}}>{item.qty}</Text>
                       <TouchableOpacity onPress={() => updateCartQty(item, 1)} style={s.qtyBtn}><Text style={{color:'#fff', fontWeight:'bold', fontSize: 14}}>+</Text></TouchableOpacity>
                     </View>
-                    <TouchableOpacity onPress={() => setCart(prev => { let u = {...prev}; delete u[item.id]; return u; })} style={{backgroundColor: '#c62828', paddingHorizontal: 6, paddingVertical: 4, borderRadius: 4, marginLeft: 6}}>
-                      <Text style={{color: '#fff', fontSize: 9, fontWeight: 'bold'}}>✕</Text>
+                    <TouchableOpacity onPress={() => setCart(prev => { let u = {...prev}; delete u[item.id]; return u; })} style={{backgroundColor: '#fdecea', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8, marginLeft: 8}}>
+                      <Text style={{color: '#c62828', fontSize: 11, fontWeight: '800'}}>✕</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -1643,7 +1714,7 @@ export default function CustomerApp() {
             </View>
 
             <View style={s.card}>
-              <Text style={s.secTitle}>📍 Delivery Details</Text>
+              <Text style={s.secTitle}>Delivery details</Text>
               <Text style={s.lbl}>Full Name:</Text>
               <TextInput style={s.i} placeholder="Enter Full Name (Required)" value={custName} onChangeText={v => setCustName(v)} />
               <Text style={s.lbl}>Mobile Number:</Text>
@@ -1701,11 +1772,11 @@ export default function CustomerApp() {
               </View>
 
               <TouchableOpacity 
-                style={[s.btn, {marginTop: 12, backgroundColor: '#6a1b9a', padding: 10, opacity: placing ? 0.6 : 1}]} 
+                style={[s.btn, {marginTop: 14, backgroundColor: '#1b8a3a', padding: 15, borderRadius: 14, opacity: placing ? 0.6 : 1}]} 
                 onPress={placeOrder}
                 disabled={placing}
               >
-                <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 11.5, textAlign: 'center'}}>
+                <Text style={{color: '#fff', fontWeight: '800', fontSize: 14.5, textAlign: 'center'}}>
                   {placing ? 'Placing order...' : paymentMode === 'Online' ? `Pay ₹${finalTotal} & Place Order` : `Place COD Order (₹${finalTotal})`}
                 </Text>
               </TouchableOpacity>
@@ -1724,42 +1795,65 @@ const s = StyleSheet.create({
   lockInput: { borderWidth: 1, borderColor: '#ce93d8', backgroundColor: '#f3e5f5', padding: 10, borderRadius: 8, fontSize: 14, textAlign: 'center', letterSpacing: 2, marginBottom: 12 },
   lockBtn: { backgroundColor: '#6a1b9a', padding: 12, borderRadius: 8, alignItems: 'center' },
   lockBtnTxt: { color: '#fff', fontWeight: 'bold', fontSize: 12.5 },
-  con: { flex: 1, backgroundColor: '#fcfcfc', width: '100%' },
-  hdr: { backgroundColor: '#4a148c', paddingHorizontal: 10, paddingVertical: 10, paddingTop: 45, width: '100%', elevation: 4 },
+  con: { flex: 1, backgroundColor: '#f6f4f9', width: '100%' },
+  hdr: { backgroundColor: '#4a148c', paddingHorizontal: 14, paddingBottom: 10, paddingTop: 45, width: '100%' },
+  hdrTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  hdrEta: { color: '#ffd54f', fontSize: 20, fontWeight: '900' },
+  hdrAddr: { color: '#fff', fontSize: 12, fontWeight: '600', marginTop: 2 },
+  hdrStore: { color: '#ce93d8', fontSize: 10.5, fontWeight: '700', marginTop: 4 },
+  gpsPill: { backgroundColor: '#ffd54f', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 14, maxWidth: 130 },
   ht: { color: '#fff', fontSize: 15, fontWeight: 'bold' },
   headerTabBtn: { flex: 1, paddingVertical: 6, borderRadius: 6, backgroundColor: '#7b1fa2', marginHorizontal: 2, alignItems: 'center', justifyContent: 'center' },
   headerTabAct: { backgroundColor: '#ffd54f' },
   body: { padding: 4, width: '100%', flex: 1 },
   announcementBox: { backgroundColor: '#fbe9e7', padding: 8, borderRadius: 6, marginBottom: 6, borderWidth: 1, borderColor: '#ffccbc', width: '100%' },
   warningBox: { backgroundColor: '#ffebee', padding: 8, borderRadius: 6, marginBottom: 8, borderWidth: 1, borderColor: '#ef9a9a', width: '100%' },
-  stickySearchContainer: { backgroundColor: '#4a148c', paddingHorizontal: 10, paddingBottom: 8, width: '100%', elevation: 4 },
+  stickySearchContainer: { backgroundColor: '#4a148c', paddingHorizontal: 12, paddingBottom: 14, paddingTop: 2, width: '100%', borderBottomLeftRadius: 22, borderBottomRightRadius: 22 },
+  searchWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 14, paddingHorizontal: 12, height: 46 },
+  searchInput: { flex: 1, fontSize: 13.5, color: '#1c1c1c', paddingVertical: 0 },
   searchBar: { borderWidth: 1, borderColor: '#ce93d8', backgroundColor: '#fff', padding: 10, borderRadius: 12, fontSize: 12, width: '100%', elevation: 1 },
   bannerVerticalContainer: { width: '100%', marginBottom: 8, marginTop: 4 },
   bannerVerticalImg: { width: '100%', height: 135, borderRadius: 12, resizeMode: 'cover', marginBottom: 6, borderWidth: 1, borderColor: '#e1bee7' },
-  catGridContainer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', width: '100%' },
-  instamartCatCard: { width: '23.5%', backgroundColor: '#fff', padding: 6, borderRadius: 12, alignItems: 'center', marginBottom: 8, borderWidth: 1, borderColor: '#eee', elevation: 1 },
-  instamartCatCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#f3e5f5', justifyContent: 'center', alignItems: 'center', marginBottom: 4, overflow: 'hidden' },
-  catCircleImg: { width: '100%', height: '100%', borderRadius: 22, resizeMode: 'cover' },
+  catGridContainer: { flexDirection: 'row', flexWrap: 'wrap', width: '100%' },
+  sectionHead: { fontSize: 16, fontWeight: '800', color: '#1c1c1c', marginBottom: 10 },
+  dotsRow: { flexDirection: 'row', justifyContent: 'center', marginTop: 8 },
+  dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#d1c4e9', marginHorizontal: 3 },
+  dotAct: { width: 18, backgroundColor: '#6a1b9a' },
+  backPill: { backgroundColor: '#f3e5f5', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14 },
+  offBadge: { position: 'absolute', top: 0, left: 10, backgroundColor: '#2e7d32', paddingHorizontal: 6, paddingVertical: 3, borderBottomLeftRadius: 6, borderBottomRightRadius: 6, zIndex: 2 },
+  offBadgeTxt: { color: '#fff', fontSize: 9, fontWeight: '800' },
+  etaChip: { backgroundColor: '#f1f1f1', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, alignSelf: 'flex-start' },
+  etaChipTxt: { fontSize: 9, fontWeight: '700', color: '#444' },
+  bottomNav: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 62 + SAFE_BOTTOM, backgroundColor: '#fff', flexDirection: 'row', borderTopLeftRadius: 20, borderTopRightRadius: 20, elevation: 16, paddingBottom: 4 + SAFE_BOTTOM },
+  navItem: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  navLbl: { fontSize: 10.5, fontWeight: '600', color: '#8a8a8a', marginTop: 1 },
+  navLblAct: { color: '#4a148c', fontWeight: '800' },
+  navBar: { position: 'absolute', top: 0, width: 28, height: 3, borderRadius: 2, backgroundColor: '#4a148c' },
+  instamartCatCard: { width: '25%', paddingHorizontal: 4, alignItems: 'center', marginBottom: 14 },
+  instamartCatCircle: { width: '100%', aspectRatio: 1, borderRadius: 18, backgroundColor: '#f3e8fb', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
+  catCircleImg: { width: '100%', height: '100%', resizeMode: 'cover' },
   productsGridContainer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', paddingBottom: 15, width: '100%' },
-  gridCard: { width: '48.5%', backgroundColor: '#fff', padding: 10, borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: '#e0e0e0', elevation: 2, alignItems: 'flex-start', minHeight: 200, justifyContent: 'space-between' },
-  gridImg: { width: '100%', height: 110, borderRadius: 8, backgroundColor: '#f9f9f9', marginBottom: 6, resizeMode: 'contain' },
-  gridAddBtn: { backgroundColor: '#6a1b9a', width: '100%', paddingVertical: 6, borderRadius: 6, alignItems: 'center', marginTop: 4 },
-  qtyCon: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 3, borderRadius: 6, marginTop: 4, justifyContent: 'space-between', width: '100%' },
-  qtyConCart: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 4, borderRadius: 6, justifyContent: 'space-between' },
-  qtyBtn: { backgroundColor: '#6a1b9a', width: 24, height: 24, borderRadius: 4, justifyContent: 'center', alignItems: 'center' },
-  floatingCartBar: { position: 'absolute', bottom: 70, left: 10, right: 10, backgroundColor: '#4a148c', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', elevation: 8 },
-  viewCartBtn: { backgroundColor: '#ffd54f', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
-  card: { backgroundColor: '#fff', padding: 10, borderRadius: 8, marginBottom: 8, borderWidth: 1, borderColor: '#d1c4e9', elevation: 2, width: '100%' },
-  secTitle: { fontSize: 12, fontWeight: 'bold', color: '#4a148c', marginVertical: 4 },
-  itemsBox: { backgroundColor: '#f3e5f5', padding: 6, borderRadius: 5, marginVertical: 4, borderWidth: 1, borderColor: '#e1bee7', width: '100%' },
-  lbl: { fontSize: 10, fontWeight: 'bold', color: '#444', marginTop: 4 },
-  i: { borderWidth: 1, borderColor: '#ce93d8', backgroundColor: '#fff', padding: 7, borderRadius: 6, fontSize: 11, marginVertical: 2, width: '100%' },
-  btn: { backgroundColor: '#6a1b9a', padding: 10, borderRadius: 6, alignItems: 'center', marginTop: 8, width: '100%' },
-  btnTxt: { color: '#fff', fontWeight: 'bold', fontSize: 11.5 },
-  catChip: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, backgroundColor: '#f3e5f5', marginRight: 5, marginBottom: 5, borderWidth: 1, borderColor: '#ce93d8' },
+  gridCard: { width: '48.5%', backgroundColor: '#fff', padding: 10, borderRadius: 16, marginBottom: 10, borderWidth: 1, borderColor: '#ececec', alignItems: 'flex-start', minHeight: 230, justifyContent: 'space-between' },
+  gridImg: { width: '100%', height: 115, borderRadius: 10, backgroundColor: '#f7f5fa', marginBottom: 8, resizeMode: 'contain' },
+  gridAddBtn: { backgroundColor: '#f1fbf3', borderWidth: 1.5, borderColor: '#1b8a3a', width: '100%', paddingVertical: 7, borderRadius: 10, alignItems: 'center', marginTop: 2 },
+  qtyCon: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1b8a3a', padding: 3, borderRadius: 10, marginTop: 2, justifyContent: 'space-between', width: '100%' },
+  qtyConCart: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1b8a3a', padding: 2, borderRadius: 10, justifyContent: 'space-between' },
+  avatar: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#ffd54f', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  emptyBox: { alignItems: 'center', paddingVertical: 40 },
+  qtyBtn: { width: 30, height: 28, justifyContent: 'center', alignItems: 'center' },
+  floatingCartBar: { position: 'absolute', bottom: 72 + SAFE_BOTTOM, left: 12, right: 12, backgroundColor: '#1b8a3a', paddingHorizontal: 14, paddingVertical: 12, borderRadius: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', elevation: 8 },
+  viewCartBtn: { backgroundColor: '#fff', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 },
+  card: { backgroundColor: '#fff', padding: 14, borderRadius: 16, marginBottom: 10, borderWidth: 1, borderColor: '#ece7f2', width: '100%' },
+  secTitle: { fontSize: 15, fontWeight: '800', color: '#1c1c1c', marginVertical: 4 },
+  itemsBox: { backgroundColor: '#faf8fc', padding: 10, borderRadius: 12, marginVertical: 6, borderWidth: 1, borderColor: '#eee', width: '100%' },
+  lbl: { fontSize: 11.5, fontWeight: '700', color: '#555', marginTop: 8 },
+  i: { borderWidth: 1, borderColor: '#e3daee', backgroundColor: '#faf8fc', padding: 11, borderRadius: 12, fontSize: 13, marginVertical: 3, width: '100%' },
+  btn: { backgroundColor: '#6a1b9a', padding: 13, borderRadius: 12, alignItems: 'center', marginTop: 10, width: '100%' },
+  btnTxt: { color: '#fff', fontWeight: '800', fontSize: 13 },
+  catChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 14, backgroundColor: '#f3e8fb', marginRight: 6, marginBottom: 6, borderWidth: 1.5, borderColor: '#f3e8fb' },
   catChipAct: { backgroundColor: '#6a1b9a', borderColor: '#6a1b9a' },
-  savedAddrRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3e5f5', padding: 6, borderRadius: 6, marginVertical: 3, justifyContent: 'space-between' },
-  addrDeleteBtn: { backgroundColor: '#c62828', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
+  savedAddrRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#faf8fc', borderWidth: 1, borderColor: '#eee', padding: 10, borderRadius: 12, marginVertical: 3, justifyContent: 'space-between' },
+  addrDeleteBtn: { backgroundColor: '#c62828', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 15, width: '100%' },
   modalCard: { width: '100%', maxWidth: 350, backgroundColor: '#fff', padding: 15, borderRadius: 14, elevation: 8 },
   modalTitle: { fontSize: 16, fontWeight: 'bold', color: '#4a148c' },
