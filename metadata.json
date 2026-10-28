@@ -1,0 +1,8 @@
+{
+  "name": "Manor Mart Customer App",
+  "description": "Hyper-local quick-commerce grocery ordering and delivery app for Manor Mart with live catalog, geofenced checkout, order tracking, and hardened security.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": []
+}

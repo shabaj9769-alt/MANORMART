@@ -4,6 +4,8 @@
   "license": "0BSD",
   "main": "index.js",
   "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 3000",
+    "build": "vite build",
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
@@ -12,6 +14,7 @@
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "1.23.1",
+    "@vitejs/plugin-react": "^6.1.2",
     "expo": "~54.0.37",
     "expo-build-properties": "*",
     "expo-device": "~7.0.2",
@@ -20,8 +23,11 @@
     "expo-notifications": "~0.29.13",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
+    "react-dom": "19.1.0",
     "react-native": "0.81.5",
-    "react-native-paper": "^4.9.2"
+    "react-native-paper": "^4.9.2",
+    "react-native-web": "^0.21.4",
+    "vite": "^8.3.5"
   },
   "private": true
 }

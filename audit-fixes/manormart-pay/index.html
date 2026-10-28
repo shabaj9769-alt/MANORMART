@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manor Mart - Secure Payment</title>
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f3e5f5;font-family:Arial,Helvetica,sans-serif;padding:16px}
+  .card{width:100%;max-width:380px;background:#fff;border-radius:14px;padding:22px;box-shadow:0 4px 18px rgba(74,20,140,.18)}
+  h1{margin:0;font-size:22px;color:#4a148c}
+  .sub{margin:2px 0 16px;color:#777;font-size:13px}
+  .row{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #eee;font-size:15px;color:#333}
+  .box{margin-top:16px;padding:14px;border-radius:10px;text-align:center}
+  .box.info{background:#ede7f6;color:#4a148c}
+  .box.ok{background:#e8f5e9;color:#1b5e20}
+  .box.err{background:#ffebee;color:#b71c1c}
+  .box.warn{background:#fff3e0;color:#e65100}
+  .bt{font-weight:bold;font-size:16px}
+  .bs{margin-top:6px;font-size:13px;line-height:1.4;word-break:break-word}
+  .btn{display:block;width:100%;margin-top:12px;padding:12px;border:0;border-radius:8px;background:#6a1b9a;color:#fff;font-size:15px;font-weight:bold;text-decoration:none;cursor:pointer}
+  .btn.sec{background:#eee;color:#333}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🛒 Manor Mart</h1>
+  <p class="sub">Secure Payment</p>
+  <div class="row"><span>Order</span><b id="oid">-</b></div>
+  <div class="row"><span>Amount to pay</span><b>₹<span id="amt">--</span></b></div>
+  <div id="box" class="box info"></div>
+</div>
+
+<script>
+  var API = 'https://manormart-pay.vercel.app/api';
+  var ID_RE = /^ord_\d{10,16}_\d{1,3}$/;
+
+  var params = new URLSearchParams(location.search);
+  var orderId = params.get('order_id') || '';
+  var customerToken = params.get('token') || '';
+
+  // SECURITY FIX: Immediately strip the bearer token from the URL bar and browser history
+  // so it cannot leak via Referer headers or browser history inspection.
+  if (customerToken && window.history && window.history.replaceState) {
+    try {
+      window.history.replaceState(null, '', location.pathname + '?order_id=' + encodeURIComponent(orderId));
+    } catch (e) {}
+  }
+
+  var appLink = 'manormart://success?order_id=' + encodeURIComponent(orderId);
+  var backLink = 'manormart://orders';
+  var paid = false, starting = false;
+
+  function $(id) { return document.getElementById(id); }
+
+  function show(kind, title, text, buttons) {
+    var box = $('box');
+    box.className = 'box ' + kind;
+    box.textContent = '';
+    var h = document.createElement('div'); h.className = 'bt'; h.textContent = title; box.appendChild(h);
+    if (text) { var p = document.createElement('div'); p.className = 'bs'; p.textContent = text; box.appendChild(p); }
+    (buttons || []).forEach(function (b) {
+      var el = document.createElement(b.href ? 'a' : 'button');
+      el.className = 'btn ' + (b.cls || '');
+      el.textContent = b.text;
+      if (b.href) el.href = b.href; else el.onclick = b.onClick;
+      box.appendChild(el);
+    });
+  }
+
+  function retryButtons() {
+    return [{ text: 'Try Again', onClick: startPayment }, { text: 'Back to App', href: backLink, cls: 'sec' }];
+  }
+  function backToAppButtons() {
+    return [{ text: 'Back to App', href: backLink, cls: 'sec' }];
+  }
+
+  async function startPayment() {
+    if (paid || starting) return;
+    starting = true;
+
+    if (!ID_RE.test(orderId)) {
+      starting = false;
+      return show('err', 'Invalid payment link', 'Please go back to the Manor Mart app and tap Pay Now again.', backToAppButtons());
+    }
+    $('oid').textContent = '#' + orderId.slice(-6);
+
+    if (!customerToken) {
+      starting = false;
+      return show('err', 'Please log in again', 'Your session could not be verified. Please open the Manor Mart app, log in, and tap Pay Now again.', backToAppButtons());
+    }
+
+    if (typeof Razorpay === 'undefined') {
+      starting = false;
+      return show('err', 'Payment system not loaded', 'Please check your internet connection and try again.', retryButtons());
+    }
+
+    show('info', 'Preparing secure payment...', '');
+
+    var info;
+    try {
+      var headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + customerToken };
+      var res = await fetch(API + '/create-order', {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({ order_id: orderId })
+      });
+      info = await res.json().catch(function () { return {}; });
+      if (res.status === 401 || res.status === 403) {
+        starting = false;
+        return show('err', 'Please log in again', 'Your session has expired. Please open the Manor Mart app, log in, and tap Pay Now again.', backToAppButtons());
+      }
+      if (!res.ok || !info.id) throw new Error(info.error || 'Could not start payment. Please try again.');
+    } catch (e) {
+      starting = false;
+      return show('err', 'Payment could not start', e.message, retryButtons());
+    }
+
+    $('amt').textContent = (info.amount / 100).toFixed(2);
+
+    var rz = new Razorpay({
+      key: info.key,
+      order_id: info.id,
+      amount: info.amount,
+      currency: info.currency || 'INR',
+      name: 'Manor Mart',
+      description: 'Order #' + orderId.slice(-6),
+      theme: { color: '#6a1b9a' },
+      handler: onPaid,
+      modal: {
+        ondismiss: function () {
+          starting = false;
+          if (!paid) show('err', 'Payment cancelled', 'You can try again whenever you are ready.', retryButtons());
+        }
+      }
+    });
+
+    rz.on('payment.failed', function (r) {
+      starting = false;
+      show('err', 'Payment failed', (r && r.error && r.error.description) || 'Please try again.', retryButtons());
+    });
+
+    show('info', 'Opening secure checkout...', '');
+    rz.open();
+  }
+
+  async function onPaid(resp) {
+    paid = true;
+    show('info', 'Payment received', 'Confirming with the server, please wait...');
+
+    var ok = false;
+    try {
+      var vHeaders = { 'Content-Type': 'application/json' };
+      if (customerToken) vHeaders['Authorization'] = 'Bearer ' + customerToken;
+      var r = await fetch(API + '/verify-payment', {
+        method: 'POST',
+        headers: vHeaders,
+        body: JSON.stringify({
+          order_id: orderId,
+          razorpay_order_id: resp.razorpay_order_id,
+          razorpay_payment_id: resp.razorpay_payment_id,
+          razorpay_signature: resp.razorpay_signature
+        })
+      });
+      ok = r.ok;
+    } catch (e) {}
+
+    // BUG FIX: Poll /api/payment-status instead of direct Firebase RTDB URL
+    // (Direct Firebase RTDB URL failed with HTTP 401 because public read is disabled!)
+    for (var i = 0; !ok && i < 10; i++) {
+      await new Promise(function (r) { setTimeout(r, 3000); });
+      try {
+        var st = await (await fetch(API + '/payment-status?orderId=' + encodeURIComponent(orderId))).json();
+        ok = Boolean(st && st.paymentVerified === true);
+      } catch (e) {}
+    }
+
+    if (ok) {
+      show('ok', 'Payment successful ✅', 'Payment ID: ' + resp.razorpay_payment_id, [{ text: 'Open Manor Mart App', href: appLink }]);
+      setTimeout(function () { location.href = appLink; }, 1200);
+    } else {
+      show('warn', 'Payment received', 'Confirmation is taking longer than usual. Open the app and tap Check in Orders after a minute. Your payment is safe.', [{ text: 'Open Manor Mart App', href: appLink }]);
+    }
+  }
+
+  window.addEventListener('load', startPayment);
+</script>
+</body>
+</html>
